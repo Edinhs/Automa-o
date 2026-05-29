@@ -297,14 +297,20 @@ def upload_area_present(page) -> bool:
     (e nao no innerText do body) ou seja apenas um icone.
     """
     for text in UPLOAD_FILES_TEXTS + CHOOSE_FILES_TEXTS:
-        for lookup in (
+        lookups = [
             lambda text=text: page.get_by_role("button", name=text),
+            lambda text=text: page.locator(f"button:has-text('{text}')"),
+            lambda text=text: page.locator(f"[role='button']:has-text('{text}')"),
             lambda text=text: page.get_by_text(text, exact=False),
-        ):
+        ]
+        for lookup in lookups:
             try:
-                locator = lookup()
-                if locator.count() and locator.first.is_visible(timeout=500):
-                    return True
+                locator = lookup(text)
+                count = locator.count()
+                for index in range(count):
+                    candidate = locator.nth(index)
+                    if candidate.is_visible(timeout=500):
+                        return True
             except Exception:
                 continue
     try:

@@ -73,17 +73,20 @@ def normalize_file_item(item: Any) -> dict[str, Any]:
 
 def enabled_upload_button(page):
     for text in UPLOAD_FILES_TEXTS:
-        for lookup in [
+        lookups = [
             lambda text=text: page.get_by_role("button", name=text),
+            lambda text=text: page.locator(f"button:has-text('{text}')"),
+            lambda text=text: page.locator(f"[role='button']:has-text('{text}')"),
             lambda text=text: page.get_by_text(text, exact=False),
-        ]:
+        ]
+        for lookup in lookups:
             try:
-                locator = lookup()
+                locator = lookup(text)
                 count = locator.count()
             except Exception:
                 continue
             for index in range(count):
-                candidate = locator.nth(index) if hasattr(locator, "nth") else (locator.first if index == 0 else locator.last)
+                candidate = locator.nth(index)
                 try:
                     if candidate.is_visible(timeout=500) and candidate.is_enabled(timeout=500):
                         return candidate
@@ -150,11 +153,20 @@ def wait_for_selected_files(page, batch: list[dict[str, Any]], log: Callable, sh
 
 def final_upload_button_enabled(page) -> bool:
     for text in UPLOAD_FILES_TEXTS:
-        for locator in [page.get_by_role("button", name=text), page.get_by_text(text, exact=False)]:
+        lookups = [
+            lambda text=text: page.get_by_role("button", name=text),
+            lambda text=text: page.locator(f"button:has-text('{text}')"),
+            lambda text=text: page.locator(f"[role='button']:has-text('{text}')"),
+            lambda text=text: page.get_by_text(text, exact=False),
+        ]
+        for lookup in lookups:
             try:
+                locator = lookup(text)
                 count = locator.count()
-                if count and locator.last.is_visible(timeout=500) and locator.last.is_enabled(timeout=500):
-                    return True
+                for index in range(count):
+                    candidate = locator.nth(index)
+                    if candidate.is_visible(timeout=500) and candidate.is_enabled(timeout=500):
+                        return True
             except Exception:
                 continue
     return False
@@ -348,33 +360,26 @@ def click_final_upload_candidate(locator, log: Callable) -> bool:
     if not count:
         return False
 
-    button = locator.last
-    try:
-        visible = button.is_visible(timeout=500)
-    except Exception:
-        visible = False
-    if not visible:
-        return False
+    # Tenta do último para o primeiro (varredura reversa), pois botões reais costumam vir depois
+    for index in reversed(range(count)):
+        button = locator.nth(index)
+        try:
+            if not button.is_visible(timeout=500):
+                continue
+            
+            # Se encontrar o botão mas ele estiver desabilitado, avisa mas continua procurando
+            if not button.is_enabled(timeout=500):
+                log("warning", f"Candidato final Upload Files na posicao {index} encontrado, mas desabilitado.")
+                continue
 
-    try:
-        enabled = button.is_enabled(timeout=500)
-    except Exception:
-        enabled = False
-    if not enabled:
-        message = "Botao final Upload Files encontrado, mas desabilitado."
-        log("warning", message)
-        raise RecoverableUploadUiError(message)
-
-    try:
-        button.click(timeout=5000)
-    except Exception as exc:
-        if final_upload_click_error_is_recoverable(exc):
-            message = final_upload_click_failure_message(exc)
-            log("warning", message, metadata={"error": str(exc)})
-            raise RecoverableUploadUiError(message) from exc
-        raise
-    log("info", "Upload Files final clicado.")
-    return True
+            button.click(timeout=5000)
+            log("info", f"Upload Files final clicado com sucesso na posicao {index}.")
+            return True
+        except Exception as exc:
+            if final_upload_click_error_is_recoverable(exc):
+                continue
+            raise
+    return False
 
 
 def click_final_upload_with_recovery(page, log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
@@ -383,13 +388,16 @@ def click_final_upload_with_recovery(page, log: Callable, should_continue: Calla
         check_continue(should_continue)
         try:
             for text in UPLOAD_FILES_TEXTS:
-                locator = page.get_by_role("button", name=text)
-                if click_final_upload_candidate(locator, log):
-                    return
-            for text in UPLOAD_FILES_TEXTS:
-                locator = page.get_by_text(text, exact=False)
-                if click_final_upload_candidate(locator, log):
-                    return
+                lookups = [
+                    lambda text=text: page.get_by_role("button", name=text),
+                    lambda text=text: page.locator(f"button:has-text('{text}')"),
+                    lambda text=text: page.locator(f"[role='button']:has-text('{text}')"),
+                    lambda text=text: page.get_by_text(text, exact=False),
+                ]
+                for lookup in lookups:
+                    locator = lookup(text)
+                    if click_final_upload_candidate(locator, log):
+                        return
             raise RecoverableUploadUiError("Botao final Upload Files nao encontrado.")
         except Exception as exc:
             last_error = exc
