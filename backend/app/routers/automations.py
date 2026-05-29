@@ -642,6 +642,10 @@ def create_upload_task_for_automation(
         "user_id": session_user_id,
         "workspace_id": workspace.id,
         "workspace_name": workspace.name,
+        # URL direta do workspace no Playground (capturada na criacao ou cadastrada
+        # manualmente). Quando presente, a automacao abre o workspace direto por ela,
+        # sem precisar pesquisar pelo nome. Cai para a busca por nome se estiver vazia.
+        "workspace_playground_url": workspace.playground_url or workspace.add_data_url or None,
         "folder_path": normalized_folder_path,
         "source_folder_path": normalized_folder_path,
         "files": [],

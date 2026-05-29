@@ -19,6 +19,15 @@ from app.models.automation import Automation
 from app.models.execution import ExecutionLog, ExecutionReport
 from app.models.file import WorkspaceFile
 from app.models.workspace import Workspace
+from app.models.agent import AgentTask
+from app.models.schedule import Schedule
+from app.routers.executions import (
+    STATUS_FILTERS,
+    STATUS_LABELS,
+    files_for_task,
+    file_status_counts,
+    normalize_text,
+)
 from app.services.audit import create_log
 
 router = APIRouter()
@@ -38,11 +47,21 @@ LOCAL_REPORT_EVENTS = {
 REPORT_BLOCKS = {
     "files": "Arquivos Detectados",
     "local_errors": "Erros Locais",
+    "automations": "Automações",
+    "updated_files": "Arquivos Atualizados",
+    "workspaces": "Workspaces",
+    "schedules": "Agendamentos",
+    "executions": "Execuções",
 }
 REPORT_TYPES = {
-    "relatorio geral": ("Relatório Geral", ["files", "local_errors"]),
+    "relatorio geral": ("Relatório Geral", ["files", "local_errors", "automations", "updated_files", "workspaces", "schedules", "executions"]),
     "relatorio arquivos": ("Relatório Arquivos", ["files"]),
     "relatorio erros locais": ("Relatório Erros Locais", ["local_errors"]),
+    "relatorio automacao": ("Relatório Automação", ["automations"]),
+    "relatorio atualizados": ("Relatório Atualizados", ["updated_files"]),
+    "relatorio workspace": ("Relatório Workspace", ["workspaces"]),
+    "relatorio agendamento": ("Relatório Agendamento", ["schedules"]),
+    "relatorio execucoes": ("Relatório Execuções", ["executions"]),
 }
 MEDIA_TYPES = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -70,7 +89,7 @@ def parse_report_type(value: str | None) -> str:
     requested = raw.split("|", 1)[0].strip() or "Relatório Geral"
     report_definition = REPORT_TYPES.get(normalize_key(requested))
     if not report_definition:
-        raise HTTPException(422, detail="Tipo de relatorio invalido. Use apenas Geral, Arquivos ou Erros Locais.")
+        raise HTTPException(422, detail="Tipo de relatorio invalido. Use apenas Geral, Arquivos, Erros Locais, Automação, Atualizados, Workspace, Agendamento ou Execuções.")
     return report_definition[0]
 
 
@@ -271,9 +290,173 @@ def block_local_errors(db: Session, filters: dict[str, Any], names: tuple[dict[i
     )
 
 
+def block_automations(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+    _, workspace_names = names
+    query = db.query(Automation).filter(Automation.is_deleted == False)
+    if filters["automation_id"]:
+        query = query.filter(Automation.id == filters["automation_id"])
+    rows = []
+    for item in query.order_by(Automation.id.desc()).all():
+        if not within_period(item.created_at, filters["start"], filters["end"]):
+            continue
+        rows.append([
+            item.id,
+            item.name or "",
+            item.description or "",
+            item.type or "",
+            item.status or "",
+            item.folder_path or "",
+            item.temp_folder_path or "",
+            format_dt(item.created_at),
+        ])
+    return ReportSection("automations", REPORT_BLOCKS["automations"], ["ID", "Nome", "Descrição", "Tipo", "Status", "Pasta Monitorada", "Pasta Temporária", "Criada em"], rows)
+
+
+def block_updated_files(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+    automation_names, workspace_names = names
+    permitted_automations = reportable_automation_ids(db)
+    query = db.query(WorkspaceFile).filter(
+        WorkspaceFile.is_deleted == False,
+        WorkspaceFile.detection_source == DETECTION_SOURCE,
+        WorkspaceFile.detection_task_id.isnot(None),
+        WorkspaceFile.detection_classification == "updated",
+    )
+    if filters["source_task_id"]:
+        query = query.filter(WorkspaceFile.detection_task_id == filters["source_task_id"])
+    rows = []
+    for item in query.order_by(WorkspaceFile.detected_at.desc(), WorkspaceFile.id.desc()).all():
+        if item.automation_id not in permitted_automations:
+            continue
+        if filters["automation_id"] and item.automation_id != filters["automation_id"]:
+            continue
+        if filters["workspace_id"] and item.workspace_id != filters["workspace_id"]:
+            continue
+        event_date = item.detected_at or item.created_at
+        if not within_period(event_date, filters["start"], filters["end"]):
+            continue
+        rows.append([
+            item.id,
+            item.file_name or "",
+            automation_names.get(item.automation_id, item.automation_id or ""),
+            workspace_names.get(item.workspace_id, item.workspace_id or ""),
+            item.detection_classification,
+            item.extension or "",
+            item.size_bytes or "",
+            item.original_path or "",
+            format_dt(event_date),
+            item.detection_task_id,
+        ])
+    return ReportSection("updated_files", REPORT_BLOCKS["updated_files"], ["ID", "Nome", "Automação", "Workspace", "Classificação", "Extensão", "Tamanho", "Caminho original", "Detectado em", "Ciclo"], rows)
+
+
+def block_workspaces(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+    query = db.query(Workspace).filter(Workspace.is_deleted == False)
+    if filters["workspace_id"]:
+        query = query.filter(Workspace.id == filters["workspace_id"])
+    rows = []
+    for item in query.order_by(Workspace.id.desc()).all():
+        if not within_period(item.created_at, filters["start"], filters["end"]):
+            continue
+        rows.append([
+            item.id,
+            item.name or "",
+            item.description or "",
+            item.playground_workspace_id or "",
+            item.playground_url or "",
+            item.embedding_model or "",
+            item.data_languages or "",
+            item.status or "",
+            item.created_via or "",
+            format_dt(item.created_at),
+        ])
+    return ReportSection("workspaces", REPORT_BLOCKS["workspaces"], ["ID", "Nome", "Descrição", "Playground ID", "Playground URL", "Embedding Model", "Data Languages", "Status", "Criado Via", "Criado em"], rows)
+
+
+def block_schedules(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+    automation_names, _ = names
+    query = db.query(Schedule).filter(Schedule.is_deleted == False)
+    if filters["automation_id"]:
+        query = query.filter(Schedule.automation_id == filters["automation_id"])
+    rows = []
+    for item in query.order_by(Schedule.id.desc()).all():
+        if not within_period(item.created_at, filters["start"], filters["end"]):
+            continue
+        rows.append([
+            item.id,
+            item.name or "",
+            automation_names.get(item.automation_id, item.automation_id or ""),
+            item.frequency_type or "",
+            item.time_of_day or "",
+            item.days_of_week or "",
+            item.day_of_month or "",
+            format_dt(item.next_run_at),
+            format_dt(item.last_run_at),
+            item.status or "",
+            format_dt(item.created_at),
+        ])
+    return ReportSection("schedules", REPORT_BLOCKS["schedules"], ["ID", "Nome", "Automação", "Frequência", "Hora", "Dias da Semana", "Dia do Mês", "Próxima Execução", "Última Execução", "Status", "Criado em"], rows)
+
+
+def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+    automation_names, workspace_names = names
+    query = db.query(AgentTask).filter(
+        AgentTask.is_deleted == False,
+        AgentTask.started_at.isnot(None),
+    )
+    if filters["source_task_id"]:
+        query = query.filter(AgentTask.id == filters["source_task_id"])
+    rows = []
+    for task in query.order_by(AgentTask.started_at.desc(), AgentTask.id.desc()).all():
+        payload = parse_json(task.payload_json)
+        automation_id = payload.get("automation_id")
+        workspace_id = payload.get("workspace_id")
+        
+        if filters["automation_id"] and automation_id != filters["automation_id"]:
+            continue
+        if filters["workspace_id"] and workspace_id != filters["workspace_id"]:
+            continue
+        if not within_period(task.started_at, filters["start"], filters["end"]):
+            continue
+        
+        files = files_for_task(db, task, payload)
+        counts = file_status_counts(files)
+        
+        status_label = STATUS_LABELS.get(task.status or "", task.status or "Pendente")
+        if filters["status"] and task.status != STATUS_FILTERS.get(normalize_text(filters["status"]), filters["status"]):
+            continue
+            
+        end = task.completed_at or task.failed_at or datetime.utcnow()
+        duration = max(int((end - task.started_at).total_seconds()), 0) if task.started_at else 0
+        
+        rows.append([
+            task.id,
+            task.task_type or "",
+            automation_names.get(automation_id, automation_id or ""),
+            workspace_names.get(workspace_id, workspace_id or payload.get("workspace_name") or ""),
+            format_dt(task.started_at),
+            format_dt(task.completed_at or task.failed_at),
+            duration,
+            counts["total"],
+            counts["success"],
+            counts["errors"],
+            status_label,
+        ])
+    return ReportSection(
+        "executions",
+        REPORT_BLOCKS["executions"],
+        ["ID", "Tipo de Tarefa", "Automação", "Workspace", "Início", "Fim", "Duração (s)", "Total de Arquivos", "Sucessos", "Erros", "Status"],
+        rows,
+    )
+
+
 BLOCK_BUILDERS = {
     "files": block_files,
     "local_errors": block_local_errors,
+    "automations": block_automations,
+    "updated_files": block_updated_files,
+    "workspaces": block_workspaces,
+    "schedules": block_schedules,
+    "executions": block_executions,
 }
 
 

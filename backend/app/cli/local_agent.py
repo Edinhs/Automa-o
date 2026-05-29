@@ -25,7 +25,7 @@ from app.services.playwright.errors import ManualReviewRequired, UnsupportedForm
 from app.services.playwright.browser import session_dir_for_user
 from app.services.playwright.playground_login import connect_playground_session
 from app.services.playwright.playground_monitor import monitor_workspace_files_status
-from app.services.playwright.playground_upload import convert_file_to_pdf, upload_files_to_workspace
+from app.services.playwright.playground_upload import convert_file_to_pdf, convert_to_pdf_in_folder, upload_files_to_workspace
 from app.services.playwright.playground_users import add_playground_user_to_workspace
 from app.services.playwright.playground_workspace import create_playground_workspace
 
@@ -768,6 +768,19 @@ def _status_for_name(result: dict[str, Any], file_name: str) -> str:
     return str(status_data.get("status") or "Unknown")
 
 
+def _pdf_dir_for_resend(payload: dict[str, Any], files: list[Any], to_resend_names: list[str]) -> Optional[str]:
+    """Pasta 'PDF' dentro do temp (staging) onde os nao-Ready sao recortados e convertidos."""
+    base_temp = payload.get("temp_folder_path")
+    if not base_temp:
+        for file_name in to_resend_names:
+            item = _item_by_name(files, file_name)
+            candidate = item.get("temp_path") or item.get("path")
+            if candidate:
+                base_temp = str(Path(candidate).parent)
+                break
+    return str(Path(base_temp) / "PDF") if base_temp else None
+
+
 def process_monitor(session: requests.Session, task: dict[str, Any], payload: dict[str, Any], user_id: Optional[int], log) -> None:
     automation_id = payload.get("automation_id")
     should_continue = stop_checker(session, task["id"], automation_id, log)
@@ -775,68 +788,110 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
     result = monitor_workspace_files_status(task_id=task["id"], user_id=user_id, payload=payload, log=log, should_continue=should_continue)
     should_continue()
     files = payload.get("files") or []
-    retry_names = list(result.get("retry") or [])
-    queued_retry: list[str] = []
+
+    ready_names = list(result.get("ready") or [])
     manual_review_names = list(result.get("manual_review") or [])
-    for file_name in result.get("ready", []):
+    to_resend_names = list(result.get("to_resend") or [])
+
+    for file_name in ready_names:
         should_continue()
         item = _item_by_name(files, file_name)
         update_file(session, item.get("file_id") or item.get("id"), {"status": "ready", "playground_status": "Ready"})
+
     for file_name in manual_review_names:
         should_continue()
         item = _item_by_name(files, file_name)
-        update_file(session, item.get("file_id") or item.get("id"), {"status": "manual_review", "playground_status": "Processing"})
-    for file_name in retry_names:
-        should_continue()
-        item = _item_by_name(files, file_name)
-        attempts = int(item.get("attempts") or 0)
         workspace_status = _status_for_name(result, file_name)
-        if attempts >= 1:
-            if file_name not in manual_review_names:
-                manual_review_names.append(file_name)
-            update_file(
-                session,
-                item.get("file_id") or item.get("id"),
-                {
-                    "status": "manual_review",
-                    "playground_status": workspace_status,
-                    "last_error": f"Workspace retornou {workspace_status} novamente apos reenvio; acao manual necessaria.",
-                },
-            )
-            log(
-                "warning",
-                f"Arquivo retornou {workspace_status} novamente apos reenvio; acao manual: {file_name}",
-                file_id=item.get("file_id") or item.get("id"),
-                automation_id=payload.get("automation_id"),
-            )
-            continue
-        retry_payload = {
-            **payload,
-            "user_id": user_id,
-            "file_id": item.get("file_id") or item.get("id"),
-            "file_name": file_name,
-            "original_path": item.get("original_path") or item.get("path"),
-            "temp_path": item.get("temp_path") or item.get("path"),
-            "attempts": item.get("attempts", 0),
-            "max_attempts": payload.get("max_retries") or payload.get("max_attempts") or 3,
-        }
         update_file(
             session,
-            retry_payload.get("file_id"),
+            item.get("file_id") or item.get("id"),
             {
-                "status": "pending_retry",
+                "status": "manual_review",
                 "playground_status": workspace_status,
-                "last_error": f"Workspace retornou {workspace_status}; aguardando conversao PDF e reenvio.",
+                "last_error": f"Workspace retornou {workspace_status}; acao manual necessaria.",
             },
         )
-        retry_task_id = create_agent_task(session, "convert_and_retry_file", retry_payload, retry_payload["max_attempts"])
-        queued_retry.append(file_name)
-        log("warning", f"Task de conversao/reenvio criada: {retry_task_id}", file_id=retry_payload.get("file_id"), automation_id=payload.get("automation_id"))
-    result["retry"] = queued_retry
+
+    # Converte os nao-Ready (ja deletados na web, ou ausentes) para PDF na pasta 'PDF' do temp
+    # e reenvia em UMA unica task, sem monitorar novamente.
+    pdf_dir = _pdf_dir_for_resend(payload, files, to_resend_names)
+    resend_files: list[dict[str, Any]] = []
+    resent_names: list[str] = []
+    conversion_failed: list[str] = []
+    for file_name in to_resend_names:
+        should_continue()
+        item = _item_by_name(files, file_name)
+        file_id = item.get("file_id") or item.get("id")
+        source = item.get("temp_path") or item.get("path") or item.get("original_path")
+        if not source:
+            update_file(session, file_id, {"status": "manual_review", "last_error": "Sem caminho de origem para reenvio."})
+            conversion_failed.append(file_name)
+            continue
+        target_pdf_dir = pdf_dir or str(Path(str(source)).parent / "PDF")
+        try:
+            pdf_path = convert_to_pdf_in_folder(str(source), target_pdf_dir, log)
+        except Exception as exc:
+            update_file(session, file_id, {"status": "manual_review", "last_error": f"Falha na conversao PDF para reenvio: {exc}"})
+            log("warning", f"Falha ao converter para PDF (reenvio): {file_name}: {exc}", file_id=file_id, automation_id=automation_id)
+            conversion_failed.append(file_name)
+            continue
+        update_file(
+            session,
+            file_id,
+            {"pdf_path": pdf_path, "converted_to_pdf": True, "status": "pending_retry", "playground_status": "Pending", "last_error": None},
+        )
+        resent_names.append(file_name)
+        resend_files.append(
+            {
+                "file_id": file_id,
+                "file_name": Path(pdf_path).name,
+                "path": pdf_path,
+                "temp_path": pdf_path,
+                "original_path": item.get("original_path") or source,
+                "batch_number": 1,
+                "batch_folder_path": target_pdf_dir,
+                "attempts": int(item.get("attempts") or 0) + 1,
+            }
+        )
+
+    for file_name in conversion_failed:
+        if file_name not in manual_review_names:
+            manual_review_names.append(file_name)
+
+    resend_task_id = None
+    if resend_files:
+        resend_payload = {
+            **payload,
+            "user_id": user_id,
+            "files": resend_files,
+            "batch_size": max(1, len(resend_files)),
+            "temp_folder_path": pdf_dir or payload.get("temp_folder_path"),
+            # Reenvio NAO deve disparar novo monitoramento.
+            "start_monitoring_after_upload": False,
+        }
+        for key in ("completed_batches", "scan_stats", "copy_stats"):
+            resend_payload.pop(key, None)
+        resend_task_id = create_agent_task(
+            session,
+            "upload_files_to_workspace",
+            resend_payload,
+            payload.get("max_retries") or payload.get("max_attempts") or 3,
+        )
+        log(
+            "info",
+            f"Reenvio (PDF) enfileirado sem novo monitoramento: task {resend_task_id}",
+            automation_id=automation_id,
+            metadata={"files": [item["file_name"] for item in resend_files]},
+        )
+
+    # Alinha o resultado com o que o backend (update_files_from_result) usa para gravar status:
+    # os reenviados ficam como pending_retry; Pending + falhas de delecao/conversao como manual_review.
+    result["retry"] = resent_names
     result["manual_review"] = manual_review_names
-    if manual_review_names and not queued_retry:
+    result["resent"] = [item["file_name"] for item in resend_files]
+    result["resend_task_id"] = resend_task_id
+    if manual_review_names and not resend_files:
         result["status"] = "manual_review"
-    if result.get("status") == "manual_review" and not result.get("retry"):
         manual_review_task(session, task["id"], "Monitoramento terminou com arquivos em revisao manual.", result)
     else:
         complete_task(session, task["id"], result)

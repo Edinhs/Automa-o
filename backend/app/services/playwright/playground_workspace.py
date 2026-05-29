@@ -543,8 +543,29 @@ def create_playground_workspace(
         if not wait_for_text(page, [workspace_name, "created", "success"], timeout_ms=30000):
             raise PlaywrightAutomationError("Workspace nao apareceu apos a criacao.")
 
+        # URL imediata logo apos a criacao, usada como fallback caso a captura da
+        # URL direta (abaixo) nao consiga reabrir o workspace recem-criado.
         playground_url = page.url
         log("info", "Workspace criado.")
+
+        # Novo fluxo: aguarda o Playground persistir o workspace, recarrega a listagem,
+        # pesquisa pelo nome recem-criado, abre o workspace e captura a URL direta dele
+        # (a URL "local" do workspace), para salvar no dashboard e permitir abrir
+        # diretamente por ela nos uploads seguintes.
+        try:
+            log("info", "Aguardando 10s antes de capturar a URL direta do workspace.")
+            time.sleep(10)
+            page.reload(wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
+            open_workspace(page, workspace_name, log, expected_area="upload")
+            playground_url = page.url
+            log("info", "URL direta do workspace capturada.", metadata={"playground_url": playground_url})
+        except Exception as exc:
+            log(
+                "warning",
+                "Nao foi possivel capturar a URL direta apos recarregar; mantendo a URL imediata da criacao.",
+                metadata={"error": str(exc), "playground_url": playground_url},
+            )
+
         return {
             "workspace_id": payload.get("workspace_id"),
             "workspace_name": workspace_name,

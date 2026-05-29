@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import runtime_path, settings
-from app.services.playwright.browser import click_first, open_persistent_chromium, page_text, safe_error_screenshot, wait_for_text
+from app.services.playwright.browser import click_first, open_persistent_chromium, page_text, safe_error_screenshot
 from app.services.playwright.errors import (
     ManualReviewRequired,
     PlaywrightAutomationError,
@@ -16,17 +16,31 @@ from app.services.playwright.errors import (
     UploadFailed,
 )
 from app.services.playwright.playground_login import configured_playground_url, ensure_logged_in
-from app.services.playwright.playground_workspace import open_workspace
-from app.services.playwright.selectors import CHOOSE_FILES_TEXTS, UPLOAD_ACTIVE_TEXTS, UPLOAD_COMPLETE_TEXTS, UPLOAD_FILES_TEXTS, UPLOAD_PROGRESS_TEXTS
+from app.services.playwright.playground_workspace import open_workspace, wait_for_workspace_area
+from app.services.playwright.selectors import (
+    CHOOSE_FILES_TEXTS,
+    UPLOAD_ACTIVE_TEXTS,
+    UPLOAD_COMPLETE_TEXTS,
+    UPLOAD_ERROR_TEXTS,
+    UPLOAD_FILES_TEXTS,
+)
 
 
 SUPPORTED_OFFICE_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".csv"}
 DEFAULT_BROWSER_RESTART_ATTEMPTS = 2
 SAME_SESSION_RECOVERY_ATTEMPTS = 2
-NEXT_BATCH_WAIT_SECONDS = 5
 # Segundos sem o indicador "Uploading Files" necessarios para confirmar a conclusao do
 # lote quando o Playground nao exibe um texto explicito de "Upload complete".
 UPLOAD_COMPLETE_STABLE_SECONDS = 3
+# Tempo maximo aguardando o lote iniciar o envio (verde "Uploading Files") ou dar erro
+# (vermelho "Upload Error") apos clicar no Upload Files final.
+BATCH_SENT_TIMEOUT_SECONDS = 30
+# Janela curta apos o verde "Uploading Files" durante a qual ainda vigiamos o aparecimento
+# de "Upload Error" (o erro costuma surgir no ultimo arquivo) antes de seguir ao proximo lote.
+POST_SENT_ERROR_WATCH_SECONDS = 5
+# Tempo maximo aguardando a conclusao total do ultimo lote antes de fechar o navegador,
+# para nao truncar o envio do ultimo conjunto de arquivos.
+FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS = 180
 
 
 def check_continue(should_continue: Callable[[], bool] | None) -> None:
@@ -146,11 +160,172 @@ def final_upload_button_enabled(page) -> bool:
     return False
 
 
-def wait_after_upload_message(seconds: int, should_continue: Callable[[], bool] | None = None) -> None:
+def body_has_upload_error(page) -> bool:
+    """True quando o Playground exibe a mensagem de erro (vermelho) de upload."""
+    body = page_text(page).lower()
+    return any(text.lower() in body for text in UPLOAD_ERROR_TEXTS)
+
+
+def upload_area_choose_present(page) -> bool:
+    """A area de selecao (Choose Files / input de arquivo) ja esta disponivel na tela."""
+    for text in CHOOSE_FILES_TEXTS:
+        for lookup in (
+            lambda text=text: page.get_by_role("button", name=text),
+            lambda text=text: page.get_by_text(text, exact=False),
+        ):
+            try:
+                locator = lookup()
+                if locator.count() and locator.first.is_visible(timeout=500):
+                    return True
+            except Exception:
+                continue
+    try:
+        if page.locator('input[type="file"]').count():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def ensure_upload_area_open(page, log: Callable) -> None:
+    """Abre a area de upload apenas se o Choose Files ainda nao estiver visivel.
+
+    No novo fluxo, lotes subsequentes reaproveitam a mesma tela sem recarregar; o
+    Choose Files costuma continuar disponivel, entao nao reabrimos a area a cada lote.
+    """
+    if upload_area_choose_present(page):
+        return
+    click_upload_files(page, log)
+
+
+def wait_for_batch_sent(page, log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
+    """Aguarda o lote iniciar o envio (verde "Uploading Files") ou dar erro (vermelho).
+
+    Levanta UploadFailed("uploading error") ao ver o vermelho; levanta UploadFailed
+    generico se nada acontecer dentro de BATCH_SENT_TIMEOUT_SECONDS.
+    """
+    deadline = time.monotonic() + BATCH_SENT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        check_continue(should_continue)
+        body = page_text(page).lower()
+        if any(text.lower() in body for text in UPLOAD_ERROR_TEXTS):
+            raise UploadFailed("uploading error")
+        if any(text.lower() in body for text in UPLOAD_ACTIVE_TEXTS):
+            log("info", "Uploading Files (verde) detectado; lote enviado.")
+            return
+        # Lotes muito pequenos podem concluir direto sem passar pelo texto ativo.
+        if any(text.lower() in body for text in UPLOAD_COMPLETE_TEXTS):
+            log("info", "Upload concluido diretamente sem fase ativa detectada.")
+            return
+        time.sleep(0.4)
+    if body_has_upload_error(page):
+        raise UploadFailed("uploading error")
+    raise UploadFailed("Lote nao iniciou o envio no tempo esperado (30s).")
+
+
+def watch_for_error_window(page, seconds: int, should_continue: Callable[[], bool] | None = None) -> bool:
+    """Vigia por 'Upload Error' por uma janela curta. Retorna True se o erro aparecer."""
     deadline = time.monotonic() + max(0, seconds)
     while time.monotonic() < deadline:
         check_continue(should_continue)
-        time.sleep(min(1, max(0, deadline - time.monotonic())))
+        if body_has_upload_error(page):
+            return True
+        time.sleep(0.4)
+    return False
+
+
+def wait_for_batch_complete(page, log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
+    """Aguarda a conclusao total do lote (usado no ultimo lote, antes de fechar o navegador).
+
+    Conclusao reconhecida por (1) texto de conclusao presente sem indicador ativo, ou
+    (2) o indicador "Uploading Files" sumiu de forma estavel por UPLOAD_COMPLETE_STABLE_SECONDS.
+    """
+    deadline = time.monotonic() + FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS
+    saw_active = True
+    absent_since: float | None = None
+    while time.monotonic() < deadline:
+        check_continue(should_continue)
+        body = page_text(page).lower()
+        if any(text.lower() in body for text in UPLOAD_ERROR_TEXTS):
+            raise UploadFailed("uploading error")
+        has_active = any(text.lower() in body for text in UPLOAD_ACTIVE_TEXTS)
+        has_complete = any(text.lower() in body for text in UPLOAD_COMPLETE_TEXTS)
+        if has_active:
+            saw_active = True
+            absent_since = None
+        elif has_complete:
+            log("info", "Ultimo lote concluido (texto de conclusao detectado).")
+            return
+        elif saw_active:
+            if absent_since is None:
+                absent_since = time.monotonic()
+            elif time.monotonic() - absent_since >= UPLOAD_COMPLETE_STABLE_SECONDS:
+                log("info", "Ultimo lote concluido (indicador de envio desapareceu).")
+                return
+        time.sleep(1.0)
+    log("warning", "Nao foi possivel confirmar a conclusao do ultimo lote no tempo limite; seguindo para fechar o navegador.")
+
+
+def detect_errored_file_name(page, batch: list[dict[str, Any]]):
+    """Tenta identificar, de forma rapida, qual arquivo do lote disparou o 'Upload Error'.
+
+    Estrategia (fast-path do modo hibrido):
+      1. Procura a linha/elemento marcado com a mensagem de erro e casa o nome de arquivo
+         do lote contido no container dessa linha.
+      2. Se nao houver marcacao casavel, e apenas UM nome do lote estiver visivel na tela,
+         assume ser ele (o erro costuma aparecer no ultimo arquivo tentado).
+    Retorna o item do lote ou None quando ambiguo (o chamador cai para o isolamento 1 a 1).
+    """
+    expected = {str(item.get("file_name") or Path(item["path"]).name): item for item in batch}
+    for err in UPLOAD_ERROR_TEXTS:
+        try:
+            markers = page.get_by_text(err, exact=False)
+            count = min(markers.count(), 5)
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                container = markers.nth(index).locator(
+                    "xpath=ancestor-or-self::*[self::li or self::tr or self::div][1]"
+                )
+                text = container.first.inner_text(timeout=500)
+            except Exception:
+                continue
+            for name, item in expected.items():
+                if name.lower() in (text or "").lower():
+                    return item
+    body = page_text(page).lower()
+    present = [item for name, item in expected.items() if name.lower() in body]
+    if len(present) == 1:
+        return present[0]
+    return None
+
+
+def move_corrupted_temp_to_error(item: dict[str, Any], log: Callable) -> str | None:
+    """Recorta a copia em TEMP do arquivo corrompido para uma pasta 'ERROR' no proprio temp.
+
+    Mantem o original na pasta monitorada intacto; a pasta ERROR sinaliza para o usuario
+    fazer a acao manual. Retorna o caminho de destino quando o arquivo e movido.
+    """
+    temp_path = item.get("temp_path") or item.get("path")
+    if not temp_path:
+        return None
+    source = Path(temp_path)
+    if not source.exists():
+        log("warning", f"Arquivo corrompido nao encontrado no temp para mover: {item.get('file_name')}", metadata={"temp_path": str(temp_path)})
+        return None
+    error_dir = source.parent / "ERROR"
+    error_dir.mkdir(parents=True, exist_ok=True)
+    target = error_dir / source.name
+    if target.exists():
+        target = error_dir / f"{source.stem}_{int(time.time())}{source.suffix}"
+    try:
+        shutil.move(str(source), str(target))
+    except Exception as exc:
+        log("warning", f"Falha ao recortar arquivo corrompido para a pasta ERROR: {exc}", metadata={"temp_path": str(temp_path)})
+        return None
+    log("info", f"Arquivo corrompido recortado para a pasta ERROR (temp): {item.get('file_name')}", metadata={"target_path": str(target)})
+    return str(target)
 
 
 def final_upload_click_error_is_recoverable(exc: Exception) -> bool:
@@ -299,12 +474,26 @@ def open_upload_browser_session(
         else:
             log("info", "Chromium iniciado.", metadata={"session_path": str(browser.session_dir)})
         check_continue(should_continue)
-        page.goto(configured_playground_url(payload), wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
-        ensure_logged_in(page, payload, log)
-        check_continue(should_continue)
-        if recovery:
-            log("info", "Reabrindo workspace apos reinicio do Chromium.")
-        open_workspace(page, workspace_name, log)
+        direct_url = str(payload.get("workspace_playground_url") or "").strip()
+        if direct_url:
+            # Novo fluxo: abre o workspace direto pela URL salva, sem pesquisar pelo nome.
+            page.goto(direct_url, wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
+            ensure_logged_in(page, payload, log)
+            check_continue(should_continue)
+            if recovery:
+                log("info", "Reabrindo workspace pela URL direta apos reinicio do Chromium.")
+            if wait_for_workspace_area(page, "upload", timeout_ms=settings.WORKSPACE_AREA_TIMEOUT_MS):
+                log("info", "Workspace aberto direto pela Playground URL.", metadata={"workspace_playground_url": direct_url})
+            else:
+                log("warning", "Playground URL direta nao carregou a area de upload; caindo para a busca por nome.")
+                open_workspace(page, workspace_name, log)
+        else:
+            page.goto(configured_playground_url(payload), wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
+            ensure_logged_in(page, payload, log)
+            check_continue(should_continue)
+            if recovery:
+                log("info", "Reabrindo workspace apos reinicio do Chromium.")
+            open_workspace(page, workspace_name, log)
         return browser, page
     except Exception:
         if browser and getattr(browser, "page", None):
@@ -338,87 +527,7 @@ def recover_upload_area_in_same_session(
     log("info", "Area de upload recuperada apos reabrir o Workspace.")
 
 
-def upload_batch(page, batch: list[dict[str, Any]], log: Callable, should_continue: Callable[[], bool] | None = None) -> list[dict[str, Any]]:
-    paths = [str(Path(item["path"]).resolve()) for item in batch]
-    missing = [path for path in paths if not Path(path).exists()]
-    if missing:
-        raise UploadFailed(f"Arquivo(s) nao encontrado(s): {missing}")
-    check_continue(should_continue)
-    click_upload_files(page, log)
-    check_continue(should_continue)
-    choose_files(page, paths, log)
-    check_continue(should_continue)
-    wait_for_selected_files(page, batch, log, should_continue=should_continue)
-    click_final_upload_with_recovery(page, log, should_continue=should_continue)
-
-    # --- Fase 1: Aguarda o upload INICIAR (aparecimento do texto ativo) ---
-    deadline_start = time.monotonic() + 30
-    upload_started = False
-    saw_active = False
-    while time.monotonic() < deadline_start:
-        check_continue(should_continue)
-        body = page_text(page).lower()
-        if "uploading error" in body or "upload error" in body:
-            raise UploadFailed("Uploading error")
-        if any(text.lower() in body for text in UPLOAD_ACTIVE_TEXTS):
-            upload_started = True
-            saw_active = True
-            log("info", "Uploading Files detectado; aguardando conclusao.")
-            break
-        # Tambem aceita conclusao imediata (lotes muito pequenos)
-        if any(text.lower() in body for text in UPLOAD_COMPLETE_TEXTS):
-            upload_started = True
-            saw_active = True
-            log("info", "Upload concluido diretamente sem fase ativa detectada.")
-            break
-        time.sleep(0.5)
-
-    if not upload_started:
-        body = page_text(page).lower()
-        if "uploading error" in body or "upload error" in body:
-            raise UploadFailed("Uploading error")
-        raise UploadFailed("Lote nao iniciou o envio no tempo esperado (30s).")
-
-    # --- Fase 2: Aguarda o upload COMPLETAR ---
-    # A conclusao do lote e reconhecida por DUAS vias, porque o Playground nem sempre
-    # exibe um texto explicito de "Upload complete":
-    #   (1) texto de conclusao presente E indicador ativo ausente; ou
-    #   (2) o indicador "Uploading Files" apareceu e depois desapareceu de forma estavel
-    #       (UPLOAD_COMPLETE_STABLE_SECONDS sem texto ativo), caso comum em que a UI apenas
-    #       passa a listar o arquivo sem mostrar mensagem de conclusao.
-    deadline_complete = time.monotonic() + 180  # timeout generoso para arquivos grandes
-    absent_since: float | None = None
-    while time.monotonic() < deadline_complete:
-        check_continue(should_continue)
-        body = page_text(page).lower()
-        if "uploading error" in body or "upload error" in body:
-            raise UploadFailed("Uploading error")
-        has_active = any(text.lower() in body for text in UPLOAD_ACTIVE_TEXTS)
-        has_complete = any(text.lower() in body for text in UPLOAD_COMPLETE_TEXTS)
-        if has_active:
-            # Ainda enviando (ou proximo arquivo do lote iniciou): reseta a janela de ausencia.
-            saw_active = True
-            absent_since = None
-        elif has_complete:
-            log("info", "Upload concluido com sucesso (texto de conclusao detectado).")
-            break
-        elif saw_active:
-            # O indicador de envio apareceu e sumiu; confirma estabilidade antes de concluir
-            # para nao finalizar em uma queda momentanea entre arquivos do mesmo lote.
-            if absent_since is None:
-                absent_since = time.monotonic()
-            elif time.monotonic() - absent_since >= UPLOAD_COMPLETE_STABLE_SECONDS:
-                log("info", "Upload concluido com sucesso (indicador de envio desapareceu).")
-                break
-        time.sleep(1.0)
-    else:
-        body = page_text(page).lower()
-        if "uploading error" in body or "upload error" in body:
-            raise UploadFailed("Uploading error")
-        raise UploadFailed("Nao foi possivel confirmar a conclusao do upload do lote no tempo limite.")
-
-    wait_after_upload_message(NEXT_BATCH_WAIT_SECONDS, should_continue=should_continue)
-    log("info", "Espera apos Upload concluida.")
+def uploaded_results(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
             **item,
@@ -428,6 +537,158 @@ def upload_batch(page, batch: list[dict[str, Any]], log: Callable, should_contin
         }
         for item in batch
     ]
+
+
+def upload_batch(
+    page,
+    batch: list[dict[str, Any]],
+    log: Callable,
+    should_continue: Callable[[], bool] | None = None,
+    *,
+    is_last_batch: bool = False,
+) -> list[dict[str, Any]]:
+    """Envia um lote (pasta) na tela de upload ja aberta.
+
+    Fluxo: garante a area de Choose Files aberta (sem recarregar), seleciona todos os
+    arquivos do lote, aguarda carregarem e clica no Upload Files final (azul). Considera o
+    lote ENVIADO ao surgir o verde "Uploading Files" e, a partir dai, segue direto para o
+    proximo lote. Se surgir o vermelho "Upload Error", levanta UploadFailed("uploading error")
+    para o chamador isolar o arquivo corrompido.
+
+    No ultimo lote (is_last_batch=True), aguarda a conclusao total antes de retornar para
+    nao truncar o envio ao fechar o navegador.
+    """
+    paths = [str(Path(item["path"]).resolve()) for item in batch]
+    missing = [path for path in paths if not Path(path).exists()]
+    if missing:
+        raise UploadFailed(f"Arquivo(s) nao encontrado(s): {missing}")
+    check_continue(should_continue)
+    ensure_upload_area_open(page, log)
+    check_continue(should_continue)
+    choose_files(page, paths, log)
+    check_continue(should_continue)
+    wait_for_selected_files(page, batch, log, should_continue=should_continue)
+    click_final_upload_with_recovery(page, log, should_continue=should_continue)
+
+    # Aguarda o lote iniciar o envio (verde "Uploading Files") ou dar erro (vermelho).
+    wait_for_batch_sent(page, log, should_continue=should_continue)
+
+    if is_last_batch:
+        # Sem proximo lote: aguarda a conclusao total para nao truncar o envio.
+        wait_for_batch_complete(page, log, should_continue=should_continue)
+    else:
+        # Janela curta vigiando o vermelho (o erro costuma surgir no ultimo arquivo do lote)
+        # antes de seguir direto ao Choose Files do proximo lote, sem recarregar a tela.
+        if watch_for_error_window(page, POST_SENT_ERROR_WATCH_SECONDS, should_continue=should_continue):
+            raise UploadFailed("uploading error")
+        log("info", "Lote enviado; seguindo ao proximo lote na mesma tela.")
+    return uploaded_results(batch)
+
+
+def finalize_corrupted(corrupted_items: list[dict[str, Any]], log: Callable, on_file_error: Callable | None) -> None:
+    """Recorta cada corrompido para a pasta ERROR (temp) e notifica via on_file_error."""
+    for corrupted_item in corrupted_items:
+        corrupted_name = corrupted_item.get("file_name")
+        moved = move_corrupted_temp_to_error(corrupted_item, log)
+        if on_file_error:
+            try:
+                suffix = " e recortado para a pasta ERROR" if moved else ""
+                on_file_error(
+                    corrupted_item.get("file_id"),
+                    f"Uploading error: arquivo '{corrupted_name}' confirmado como corrompido{suffix}.",
+                )
+            except Exception as cb_exc:
+                log("warning", f"Falha ao executar callback on_file_error: {cb_exc}")
+
+
+def isolate_one_by_one(
+    page,
+    batch: list[dict[str, Any]],
+    payload: dict[str, Any],
+    workspace_name: str,
+    log: Callable,
+    on_file_error: Callable | None,
+    should_continue: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """Fallback robusto: reenvia cada arquivo do lote individualmente para isolar os corrompidos.
+
+    Nunca move um arquivo saudavel: so confirma corrompido o arquivo que falha sozinho.
+    """
+    corrupted_items: list[dict[str, Any]] = []
+    healthy_results: list[dict[str, Any]] = []
+    try:
+        recover_upload_area_in_same_session(page, payload, workspace_name, log, should_continue=should_continue)
+    except Exception as recovery_exc:
+        log("warning", "Recuperacao da area de upload falhou antes do isolamento individual.", metadata={"error": str(recovery_exc)})
+    for solo_item in list(batch):
+        check_continue(should_continue)
+        try:
+            healthy_results.extend(upload_batch(page, [solo_item], log, should_continue=should_continue))
+            log("info", f"Arquivo revalidado individualmente com sucesso: {solo_item.get('file_name')}")
+        except UploadFailed as solo_exc:
+            if "uploading error" not in str(solo_exc).lower():
+                raise
+            corrupted_items.append(solo_item)
+            log("warning", f"Arquivo confirmado como corrompido: {solo_item.get('file_name')}", metadata={"file_name": solo_item.get("file_name")})
+        try:
+            recover_upload_area_in_same_session(page, payload, workspace_name, log, should_continue=should_continue)
+        except Exception:
+            pass
+    finalize_corrupted(corrupted_items, log, on_file_error)
+    return healthy_results
+
+
+def handle_uploading_error(
+    page,
+    batch: list[dict[str, Any]],
+    batch_number: int,
+    payload: dict[str, Any],
+    workspace_name: str,
+    log: Callable,
+    on_file_error: Callable | None,
+    should_continue: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """Modo hibrido de tratamento do 'Upload Error'.
+
+    Fast-path: identifica o provavel corrompido (ultimo/destacado) e valida reenviando o
+    RESTANTE do lote; se o restante sobe sem erro, o candidato esta confirmado (e movido para
+    ERROR). Se a identificacao for ambigua ou o restante ainda falhar, cai para o isolamento
+    1 a 1. Retorna os resultados dos arquivos saudaveis (pode ser lista vazia).
+    """
+    # Identifica o candidato ANTES de recuperar a area (a marca de erro some apos o reload).
+    candidate = detect_errored_file_name(page, batch)
+    # Libera os locks de arquivo do Windows que o Chromium mantem durante o upload.
+    try:
+        recover_upload_area_in_same_session(page, payload, workspace_name, log, should_continue=should_continue)
+    except Exception as recovery_exc:
+        log("warning", "Recuperacao da area de upload falhou antes de tratar o corrompido.", metadata={"error": str(recovery_exc)})
+
+    if candidate is not None:
+        candidate_name = candidate.get("file_name")
+        remainder = [item for item in batch if item is not candidate]
+        if not remainder:
+            log("info", f"Lote {batch_number} continha apenas o arquivo corrompido: {candidate_name}.")
+            finalize_corrupted([candidate], log, on_file_error)
+            return []
+        log(
+            "info",
+            f"Provavel corrompido (fast-path): {candidate_name}. Reenviando os {len(remainder)} demais do lote {batch_number}.",
+            metadata={"candidate": candidate_name},
+        )
+        try:
+            result = upload_batch(page, remainder, log, should_continue=should_continue)
+            finalize_corrupted([candidate], log, on_file_error)
+            return result
+        except UploadFailed as exc:
+            if "uploading error" not in str(exc).lower():
+                raise
+            log("warning", f"Reenvio do restante do lote {batch_number} ainda deu erro; caindo para o isolamento 1 a 1.", metadata={"candidate": candidate_name})
+            try:
+                recover_upload_area_in_same_session(page, payload, workspace_name, log, should_continue=should_continue)
+            except Exception:
+                pass
+
+    return isolate_one_by_one(page, batch, payload, workspace_name, log, on_file_error, should_continue)
 
 
 def upload_files_to_workspace(
@@ -485,10 +746,16 @@ def upload_files_to_workspace(
                     },
                 )
                 try:
-                    if index > 1 and restart_attempt == 0 and same_session_recovery_attempt == 0:
-                        log("info", "Limpando estado do lote anterior antes do proximo envio.", metadata={"batch": batch_number})
-                        recover_upload_area_in_same_session(page, payload, workspace_name, log, should_continue=should_continue)
-                    batch_result = upload_batch(page, batch, log, should_continue=should_continue)
+                    # Sem recarregar entre lotes: apos o lote anterior iniciar o envio
+                    # (verde "Uploading Files"), seguimos direto ao Choose Files do proximo
+                    # lote na mesma tela. O ultimo lote aguarda a conclusao total.
+                    batch_result = upload_batch(
+                        page,
+                        batch,
+                        log,
+                        should_continue=should_continue,
+                        is_last_batch=(index == len(batches)),
+                    )
                 except RecoverableUploadUiError as exc:
                     error_screenshot_saved = save_recovery_screenshot(browser, task_id, log)
                     if same_session_recovery_attempt < SAME_SESSION_RECOVERY_ATTEMPTS:
@@ -544,111 +811,31 @@ def upload_files_to_workspace(
                     log("info", "Repetindo lote apos reinicio do Chromium.", metadata={"batch": batch_number, "attempt": restart_attempt})
                     continue
                 except UploadFailed as exc:
-                    if "uploading error" in str(exc).lower():
-                        if not batch:
-                            raise
-
-                        # Captura screenshot para diagnostico antes de qualquer operacao
-                        error_screenshot_saved = save_recovery_screenshot(browser, task_id, log)
-
-                        log(
-                            "warning",
-                            f"Uploading error detectado na pagina do Playground. Isolando arquivos do lote {batch_number} um a um para identificar o corrompido.",
-                            metadata={"batch": batch_number, "files": [i.get("file_name") for i in batch]},
-                        )
-
-                        # FIX #4 (HIGH): Estrategia de isolamento um a um.
-                        # Em vez de assumir cegamente que o ultimo arquivo e o culpado (o que destruiria
-                        # arquivos saudaveis), reenviamos cada arquivo individualmente para identificar
-                        # com precisao qual causa o erro.
-                        corrupted_items: list[dict[str, Any]] = []
-                        healthy_results: list[dict[str, Any]] = []
-
-                        # FIX #2 (CRITICAL): Recuperar a sessao ANTES de qualquer operacao de I/O
-                        # para liberar os locks de arquivo do Windows que o Chromium mantem ativos.
-                        try:
-                            recover_upload_area_in_same_session(page, payload, workspace_name, log, should_continue=should_continue)
-                        except Exception as recovery_exc:
-                            log(
-                                "warning",
-                                "Recuperacao da area de upload falhou antes do isolamento individual.",
-                                metadata={"error": str(recovery_exc)},
-                            )
-
-                        for solo_item in list(batch):
-                            check_continue(should_continue)
-                            try:
-                                solo_result = upload_batch(page, [solo_item], log, should_continue=should_continue)
-                                healthy_results.extend(solo_result)
-                                log(
-                                    "info",
-                                    f"Arquivo revalidado individualmente com sucesso: {solo_item.get('file_name')}",
-                                )
-                            except UploadFailed as solo_exc:
-                                if "uploading error" in str(solo_exc).lower():
-                                    corrupted_items.append(solo_item)
-                                    log(
-                                        "warning",
-                                        f"Arquivo confirmado como corrompido: {solo_item.get('file_name')}",
-                                        metadata={"file_name": solo_item.get("file_name"), "original_path": solo_item.get("original_path")},
-                                    )
-                                else:
-                                    raise
-                            # Recupera a area entre cada envio individual
-                            try:
-                                recover_upload_area_in_same_session(page, payload, workspace_name, log, should_continue=should_continue)
-                            except Exception:
-                                pass
-
-                        # Agora que a sessao foi recuperada (locks liberados), move os arquivos corrompidos
-                        for corrupted_item in corrupted_items:
-                            corrupted_name = corrupted_item.get("file_name")
-                            corrupted_original_path = corrupted_item.get("original_path")
-                            corrupted_file_id = corrupted_item.get("file_id")
-
-                            if corrupted_original_path:
-                                try:
-                                    orig_path = Path(corrupted_original_path)
-                                    if orig_path.exists():
-                                        error_dir = orig_path.parent / "Error"
-                                        error_dir.mkdir(parents=True, exist_ok=True)
-                                        target_path = error_dir / orig_path.name
-                                        # FIX #5 (MEDIUM): Evita colisao de nomes na pasta Error
-                                        if target_path.exists():
-                                            ts = int(time.time())
-                                            target_path = error_dir / f"{orig_path.stem}_{ts}{orig_path.suffix}"
-                                        shutil.move(str(orig_path), str(target_path))
-                                        log(
-                                            "info",
-                                            f"Arquivo corrompido movido para pasta Error: {corrupted_name}",
-                                            metadata={"target_path": str(target_path)},
-                                        )
-                                except Exception as move_exc:
-                                    log("warning", f"Falha ao mover arquivo corrompido para Error: {move_exc}")
-
-                            # A automacao NAO deve deletar arquivos da pasta temp.
-                            # A copia temporaria do arquivo corrompido e preservada de proposito
-                            # (o original ja foi movido para a pasta Error acima). A limpeza,
-                            # quando necessaria, deve ser feita manualmente.
-
-                            if on_file_error:
-                                try:
-                                    on_file_error(
-                                        corrupted_file_id,
-                                        f"Uploading error: Arquivo '{corrupted_name}' confirmado como corrompido e movido para a pasta Error.",
-                                    )
-                                except Exception as cb_exc:
-                                    log("warning", f"Falha ao executar callback on_file_error: {cb_exc}")
-
-                        # Propaga os resultados dos arquivos saudaveis
-                        if healthy_results:
-                            batch_result = healthy_results
-                        else:
-                            log("info", f"Todos os arquivos do lote {batch_number} foram confirmados como corrompidos.")
-                            batch_result = []
-                        break
-                    else:
+                    if "uploading error" not in str(exc).lower():
                         raise
+                    if not batch:
+                        raise
+                    # Screenshot de diagnostico antes de qualquer operacao de recuperacao/IO.
+                    error_screenshot_saved = save_recovery_screenshot(browser, task_id, log)
+                    log(
+                        "warning",
+                        f"Upload Error detectado no Playground no lote {batch_number}; identificando o arquivo corrompido (modo hibrido).",
+                        metadata={"batch": batch_number, "files": [i.get("file_name") for i in batch]},
+                    )
+                    # Modo hibrido: tenta pelo ultimo/destacado e cai para 1-a-1 se ambiguo.
+                    # Nao usa 'break': cai no checkpoint abaixo para registrar os saudaveis.
+                    batch_result = handle_uploading_error(
+                        page,
+                        batch,
+                        batch_number,
+                        payload,
+                        workspace_name,
+                        log,
+                        on_file_error,
+                        should_continue=should_continue,
+                    )
+                    if not batch_result:
+                        log("info", f"Todos os arquivos do lote {batch_number} foram confirmados como corrompidos.")
 
                 error_screenshot_saved = False
                 if batch_result:
@@ -701,6 +888,18 @@ def find_soffice() -> str | None:
     return None
 
 
+def libreoffice_profile_uri(target_dir: Path) -> str:
+    """URI de um perfil de usuario dedicado e limpo para o LibreOffice headless.
+
+    Um perfil proprio evita prompts de "outra instancia aberta"/restauracao e permite a
+    conversao de arquivos confidenciais sem travar em dialogos de permissao do Office:
+    em modo headless o LibreOffice prossegue sem habilitar macros nem aguardar interacao.
+    """
+    profile_dir = target_dir / ".lo_profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return profile_dir.resolve().as_uri()
+
+
 def convert_file_to_pdf(original_path: str, output_dir: str | None, log: Callable) -> str:
     source = Path(original_path)
     if not source.exists():
@@ -719,6 +918,14 @@ def convert_file_to_pdf(original_path: str, output_dir: str | None, log: Callabl
         [
             soffice,
             "--headless",
+            # Flags que evitam dialogos de permissao/seguranca/restauracao em arquivos
+            # confidenciais (a conversao prossegue sem interacao do usuario).
+            "--norestore",
+            "--nolockcheck",
+            "--nodefault",
+            "--nologo",
+            "--nofirststartwizard",
+            f"-env:UserInstallation={libreoffice_profile_uri(target_dir)}",
             "--convert-to",
             "pdf",
             "--outdir",
@@ -736,3 +943,27 @@ def convert_file_to_pdf(original_path: str, output_dir: str | None, log: Callabl
         raise ManualReviewRequired("Conversao executada, mas PDF nao foi encontrado.")
     log("info", f"PDF criado: {pdf_path}")
     return str(pdf_path)
+
+
+def convert_to_pdf_in_folder(source_path: str, pdf_dir: str, log: Callable) -> str:
+    """Recorta o arquivo de origem para a pasta 'PDF' (no temp) e o converte para PDF ali.
+
+    Usado no retry pos-monitoramento: o arquivo nao-Ready e movido para uma pasta PDF dentro
+    do staging e convertido no mesmo lugar antes do reenvio.
+    """
+    destination = Path(pdf_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    source = Path(source_path)
+    if not source.exists():
+        raise UnsupportedFormat(f"Arquivo nao encontrado para mover/converter: {source_path}")
+    moved = destination / source.name
+    try:
+        if source.resolve() != moved.resolve():
+            if moved.exists():
+                moved = destination / f"{source.stem}_{int(time.time())}{source.suffix}"
+            shutil.move(str(source), str(moved))
+            log("info", f"Arquivo recortado para a pasta PDF: {moved.name}", metadata={"pdf_dir": str(destination)})
+    except Exception as exc:
+        log("warning", f"Falha ao recortar para a pasta PDF; convertendo do local original: {exc}")
+        moved = source
+    return convert_file_to_pdf(str(moved), str(destination), log)

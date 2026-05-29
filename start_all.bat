@@ -19,25 +19,25 @@ echo.
 
 if not exist "%ROOT%start_backend.bat" (
   echo ERRO: start_backend.bat nao encontrado.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
 if not exist "%ROOT%start_dashboard.bat" (
   echo ERRO: start_dashboard.bat nao encontrado.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
 if not exist "%ROOT%start_agent.bat" (
   echo ERRO: start_agent.bat nao encontrado.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
 if not exist "%HIDDEN_STARTER%" (
   echo ERRO: Helper de inicializacao oculta nao encontrado: %HIDDEN_STARTER%
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -114,7 +114,7 @@ set /a WAIT_ELAPSED=0
 call :port_listening %WAIT_PORT%
 if not errorlevel 1 exit /b 0
 if %WAIT_ELAPSED% GEQ %WAIT_SECONDS% exit /b 1
-timeout /t 1 /nobreak >nul
+ping 127.0.0.1 -n 2 >nul
 set /a WAIT_ELAPSED+=1
 goto wait_port_loop
 

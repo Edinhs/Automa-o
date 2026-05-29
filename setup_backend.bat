@@ -8,7 +8,7 @@ echo ============================================================
 
 if not exist "backend" (
   echo ERRO: Pasta backend nao encontrada.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -17,7 +17,7 @@ cd backend
 where python >nul 2>nul
 if errorlevel 1 (
   echo ERRO: Python nao encontrado no PATH.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -26,7 +26,7 @@ if not exist ".venv" (
   python -m venv .venv
   if errorlevel 1 (
     echo ERRO: Falha ao criar ambiente virtual.
-    pause
+    if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
     exit /b 1
   )
 )
@@ -34,7 +34,7 @@ if not exist ".venv" (
 call ".venv\Scripts\activate.bat"
 if errorlevel 1 (
   echo ERRO: Falha ao ativar .venv.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -47,7 +47,7 @@ echo Atualizando pip...
 python -m pip install --upgrade pip
 if errorlevel 1 (
   echo ERRO: Falha ao atualizar pip.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -55,7 +55,7 @@ echo Instalando dependencias...
 python -m pip install -r requirements.txt
 if errorlevel 1 (
   echo ERRO: Falha ao instalar requirements.txt.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -68,7 +68,7 @@ if "%INSTALL_PLAYWRIGHT_BROWSER%"=="1" (
     if errorlevel 1 (
       echo ERRO: Falha ao instalar Chromium do Playwright.
       echo Execute manualmente: cd backend ^&^& .venv\Scripts\activate ^&^& python -m playwright install chromium
-      pause
+      if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
       exit /b 1
     )
   )
@@ -86,7 +86,7 @@ set "AUTOMATION_HUB_MIGRATION_ENVIRONMENT=operational"
 python -m alembic upgrade head
 if errorlevel 1 (
   echo ERRO: Falha ao aplicar migrations do ambiente Operacional.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 
@@ -95,7 +95,7 @@ set "AUTOMATION_HUB_MIGRATION_ENVIRONMENT=developer"
 python -m alembic upgrade head
 if errorlevel 1 (
   echo ERRO: Falha ao aplicar migrations do ambiente Desenvolvedor.
-  pause
+  if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
 set "AUTOMATION_HUB_MIGRATION_ENVIRONMENT="
@@ -103,14 +103,14 @@ set "AUTOMATION_HUB_MIGRATION_ENVIRONMENT="
 if /I "%RUN_DEV_SEED%"=="1" (
   if not exist "app\cli\seed_dev_data.py" (
     echo ERRO: seed_dev_data.py nao esta disponivel neste pacote.
-    pause
+    if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
     exit /b 1
   )
   echo Executando seed de desenvolvimento...
   python -m app.cli.seed_dev_data
   if errorlevel 1 (
     echo ERRO: Falha ao executar seed.
-    pause
+    if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
     exit /b 1
   )
 ) else (
@@ -121,7 +121,7 @@ if /I "%RUN_DEV_SEED%"=="1" (
     python -m app.cli.create_admin_user
     if errorlevel 1 (
       echo ERRO: Falha ao criar admin inicial.
-      pause
+      if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause
       exit /b 1
     )
   ) else (
@@ -132,4 +132,4 @@ if /I "%RUN_DEV_SEED%"=="1" (
 
 echo.
 echo Setup backend concluido com sucesso.
-pause
+if /I not "%AUTOMATION_HUB_NO_PAUSE%"=="1" pause

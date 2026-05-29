@@ -193,12 +193,66 @@ UPLOAD_COMPLETE_TEXTS = [
     "Concluído",
 ]
 
+# Mensagem de erro (vermelho) exibida quando um arquivo corrompido nao pode ser enviado.
+# Centralizado aqui para o fluxo de upload detectar e isolar o arquivo culpado.
+UPLOAD_ERROR_TEXTS = [
+    "Upload Error",
+    "Uploading Error",
+    "Upload error",
+    "Uploading error",
+    "Upload failed",
+    "Erro no upload",
+    "Erro ao enviar",
+    "Falha no upload",
+]
+
 # Backward-compat alias used by other modules
 UPLOAD_PROGRESS_TEXTS = UPLOAD_ACTIVE_TEXTS + UPLOAD_COMPLETE_TEXTS
 
 FILES_TAB_TEXTS = [
     "Files",
     "Arquivos",
+    "Status",
+]
+
+# Controle de "proxima pagina" da tabela de arquivos (paginacao "< 1 ... >").
+NEXT_PAGE_TEXTS = [
+    ">",
+    "Next",
+    "Next page",
+    "Proxima",
+    "Proxima pagina",
+    "Próxima",
+    "Próxima página",
+]
+
+# Controle de deletar arquivo na coluna "Actions" (icone folha + x, azul).
+# A busca e SEMPRE feita dentro da linha do arquivo alvo (row-scoped) e a delecao so e
+# considerada efetiva apos a linha sumir no F5 seguinte. AJUSTE/COMPLEMENTE com o
+# aria-label/title/classe exatos do icone quando disponivel para deixar o clique cirurgico.
+DELETE_FILE_CONTROL_TEXTS = [
+    "Delete",
+    "Delete file",
+    "Remove",
+    "Remove file",
+    "Excluir",
+    "Remover",
+    "Apagar",
+    "Trash",
+    "Lixeira",
+]
+
+# Botoes de confirmacao caso a delecao abra um modal de confirmacao.
+DELETE_CONFIRM_TEXTS = [
+    "Confirm",
+    "Confirmar",
+    "Yes",
+    "Sim",
+    "Delete",
+    "Excluir",
+    "Remove",
+    "Remover",
+    "OK",
 ]
 
 READY_STATUS_TEXTS = ["Ready", "Pronto", "Finalizado"]
