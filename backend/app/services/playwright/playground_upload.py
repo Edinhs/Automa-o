@@ -276,6 +276,7 @@ def save_recovery_screenshot(browser, task_id: int, log: Callable) -> bool:
 
 
 def open_upload_browser_session(
+    task_id: int,
     user_id: int | None,
     payload: dict[str, Any],
     workspace_name: str,
@@ -306,6 +307,8 @@ def open_upload_browser_session(
         open_workspace(page, workspace_name, log)
         return browser, page
     except Exception:
+        if browser and getattr(browser, "page", None):
+            safe_error_screenshot(browser.page, task_id, log)
         close_browser(browser, log, "Navegador fechado apos falha ao iniciar sessao.")
         raise
 
@@ -462,7 +465,7 @@ def upload_files_to_workspace(
                 "Subpastas de lote preparadas para envio sequencial.",
                 metadata={"batch_count": len(batches), "batch_size": batch_size, "batch_folders": staged_batch_folders},
             )
-        browser, page = open_upload_browser_session(user_id, payload, workspace_name, log, should_continue)
+        browser, page = open_upload_browser_session(task_id, user_id, payload, workspace_name, log, should_continue)
         for index, batch in enumerate(batches, start=1):
             restart_attempt = 0
             same_session_recovery_attempt = 0
@@ -536,7 +539,7 @@ def upload_files_to_workspace(
                     )
                     close_browser(browser, log, "Navegador fechado para recuperacao.")
                     browser = None
-                    browser, page = open_upload_browser_session(user_id, payload, workspace_name, log, should_continue, recovery=True)
+                    browser, page = open_upload_browser_session(task_id, user_id, payload, workspace_name, log, should_continue, recovery=True)
                     same_session_recovery_attempt = 0
                     log("info", "Repetindo lote apos reinicio do Chromium.", metadata={"batch": batch_number, "attempt": restart_attempt})
                     continue

@@ -161,6 +161,25 @@ CHOOSE_FILES_TEXTS = [
     "Selecionar arquivos",
 ]
 
+# Usado APENAS para detectar que a area de upload ja carregou (gate de prontidao),
+# nao para clicar. E proposital que seja mais amplo que UPLOAD_FILES_TEXTS: o clique
+# de upload continua usando UPLOAD_FILES_TEXTS (preciso), enquanto a deteccao tolera
+# variacoes de rotulo / textos de drag-and-drop do Playground.
+UPLOAD_AREA_TEXTS = UPLOAD_FILES_TEXTS + CHOOSE_FILES_TEXTS + [
+    "Add files",
+    "Add file",
+    "Add data",
+    "Upload Documents",
+    "Upload documents",
+    "Carregar arquivos",
+    "Adicionar arquivos",
+    "Adicionar arquivo",
+    "Drag and drop",
+    "Drag & drop",
+    "Drop files here",
+    "Arraste e solte",
+]
+
 UPLOAD_ACTIVE_TEXTS = [
     "Uploading Files",
     "Uploading files",

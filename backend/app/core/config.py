@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     PLAYWRIGHT_HEADLESS: bool = False
     MANUAL_LOGIN_TIMEOUT_MINUTES: int = 10
     PLAYWRIGHT_DEFAULT_TIMEOUT: int = 30000
+    WORKSPACE_AREA_TIMEOUT_MS: int = 30000
     SCREENSHOTS_ERROR_PATH: str = "./data/screenshots/errors"
     OPERATIONAL_SCREENSHOTS_ERROR_PATH: str = ""
     DEVELOPER_SCREENSHOTS_ERROR_PATH: str = "./data/developer/screenshots/errors"

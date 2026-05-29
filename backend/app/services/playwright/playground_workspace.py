@@ -18,10 +18,12 @@ from app.services.playwright.errors import PlaywrightAutomationError, WorkspaceN
 from app.services.playwright.playground_login import configured_playground_url, ensure_logged_in
 from app.services.playwright.selectors import (
     ALL_WORKSPACE_TEXTS,
+    CHOOSE_FILES_TEXTS,
     CREATE_WORKSPACE_TEXTS,
     DATA_LANGUAGE_FIELDS,
     EMBEDDING_MODEL_FIELDS,
     FILES_TAB_TEXTS,
+    UPLOAD_AREA_TEXTS,
     UPLOAD_FILES_TEXTS,
     USER_MANAGEMENT_TEXTS,
     WORKSPACE_DESCRIPTION_FIELDS,
@@ -31,7 +33,7 @@ from app.services.playwright.selectors import (
 
 DEFAULT_PLAYGROUND_DATA_LANGUAGE = "English"
 WORKSPACE_EXPECTED_AREAS = {
-    "upload": UPLOAD_FILES_TEXTS,
+    "upload": UPLOAD_AREA_TEXTS,
     "files": FILES_TAB_TEXTS,
     "users": USER_MANAGEMENT_TEXTS,
 }
@@ -287,16 +289,44 @@ def reload_workspace_page(page, log: Callable) -> None:
     page.reload(wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
 
 
+def upload_area_present(page) -> bool:
+    """Detecta a area de upload de forma independente do texto visivel.
+
+    Alinhado com o que a acao de upload realmente usa (get_by_role / input file):
+    um botao pode existir e ser clicavel mesmo que o rotulo esteja em aria-label
+    (e nao no innerText do body) ou seja apenas um icone.
+    """
+    for text in UPLOAD_FILES_TEXTS + CHOOSE_FILES_TEXTS:
+        for lookup in (
+            lambda text=text: page.get_by_role("button", name=text),
+            lambda text=text: page.get_by_text(text, exact=False),
+        ):
+            try:
+                locator = lookup()
+                if locator.count() and locator.first.is_visible(timeout=500):
+                    return True
+            except Exception:
+                continue
+    try:
+        if page.locator('input[type="file"]').count():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def workspace_area_loaded(page, expected_area: str) -> bool:
     expected_texts = WORKSPACE_EXPECTED_AREAS.get(expected_area)
     if not expected_texts:
         raise PlaywrightAutomationError(f"Area de Workspace invalida: {expected_area}")
+    if workspace_page_is_stale(page) or workspace_page_is_loading(page):
+        return False
     body = page_text(page).lower()
-    return (
-        any(text.lower() in body for text in expected_texts)
-        and not workspace_page_is_stale(page)
-        and not workspace_page_is_loading(page)
-    )
+    if any(text.lower() in body for text in expected_texts):
+        return True
+    if expected_area == "upload" and upload_area_present(page):
+        return True
+    return False
 
 
 def wait_for_workspace_area(page, expected_area: str, timeout_ms: int = 20000) -> bool:
@@ -423,7 +453,7 @@ def open_workspace(page, workspace_name: str, log: Callable, expected_area: str 
             page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
             pass
-        if wait_for_workspace_area(page, expected_area, timeout_ms=20000):
+        if wait_for_workspace_area(page, expected_area, timeout_ms=settings.WORKSPACE_AREA_TIMEOUT_MS):
             log("info", WORKSPACE_AREA_LOGS[expected_area])
             return
         if attempt < 2:
