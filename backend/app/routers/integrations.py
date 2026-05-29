@@ -1,0 +1,341 @@
+import json
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.db.session import get_db
+from app.models.integration import IntegrationConnection, IntegrationDelivery
+from app.services.audit import create_log
+from app.services.integrations.graph_client import (
+    GraphClient,
+    GraphConfigurationError,
+    GraphIntegrationError,
+    build_graph_status,
+    missing_base_graph_settings,
+    sanitize_for_storage,
+    send_teams_webhook,
+)
+
+router = APIRouter()
+
+
+@router.get("")
+def list_integrations(db: Session = Depends(get_db)):
+    return db.query(IntegrationConnection).filter(IntegrationConnection.is_deleted == False).all()
+
+
+@router.get("/graph/status")
+def graph_status():
+    return build_graph_status(settings)
+
+
+@router.get("/deliveries")
+def integration_deliveries(
+    limit: int = Query(10, ge=1, le=100),
+    provider: str | None = None,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(IntegrationDelivery)
+    if provider:
+        query = query.filter(IntegrationDelivery.provider == provider)
+    if status:
+        query = query.filter(IntegrationDelivery.status == status)
+    deliveries = query.order_by(IntegrationDelivery.created_at.desc(), IntegrationDelivery.id.desc()).limit(limit).all()
+    return [_delivery_response(delivery) for delivery in deliveries]
+
+
+@router.post("/graph/test")
+def test_graph_connection():
+    status = build_graph_status(settings)
+    if not status["configured"]:
+        return {"status": "not_configured", "provider": "Microsoft Graph", "missing": status["missing"]}
+    try:
+        result = GraphClient(settings).test_connection()
+        return {
+            "status": "connected",
+            "provider": "Microsoft Graph",
+            "request_id": result.request_id,
+            "account": result.data,
+        }
+    except GraphIntegrationError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/teams/messages")
+def send_teams_message(data: dict, db: Session = Depends(get_db)):
+    content = str(data.get("content") or data.get("message") or "").strip()
+    if not content:
+        raise HTTPException(422, "Mensagem Teams vazia.")
+
+    target = str(data.get("target") or data.get("channel") or "").strip()
+    if not target:
+        target = _teams_default_target()
+    request_payload = {**data, "content": content, "target": target}
+    delivery = _create_delivery(db, "Teams", "message", target, data.get("event"), request_payload)
+    try:
+        if str(settings.MS_GRAPH_TEAMS_WEBHOOK_URL or "").strip():
+            result = send_teams_webhook(request_payload, settings)
+        else:
+            _ensure_teams_graph_message_configured()
+            result = GraphClient(settings).send_channel_message(request_payload)
+        _finish_delivery(db, delivery, "sent", result.data)
+        return {"status": "sent", "channel": "teams", "delivery": _delivery_response(delivery)}
+    except GraphIntegrationError as exc:
+        _fail_delivery(db, delivery, exc)
+        raise _http_error(exc) from exc
+
+
+@router.post("/outlook/email")
+def send_outlook_email(data: dict, db: Session = Depends(get_db)):
+    recipients = _normalize_recipients(data.get("to_recipients") or data.get("to") or data.get("recipients"))
+    if not recipients:
+        raise HTTPException(422, "Informe pelo menos um destinatario.")
+    subject = str(data.get("subject") or "").strip()
+    if not subject:
+        raise HTTPException(422, "Informe o assunto do e-mail.")
+
+    request_payload = {
+        **data,
+        "to_recipients": recipients,
+        "subject": subject,
+        "body": str(data.get("body") or ""),
+        "body_content_type": str(data.get("body_content_type") or "HTML"),
+    }
+    delivery = _create_delivery(db, "Outlook", "email", _recipient_target(recipients), subject, request_payload)
+    try:
+        result = GraphClient(settings).send_mail(
+            to_recipients=recipients,
+            subject=subject,
+            body=request_payload["body"],
+            body_content_type=request_payload["body_content_type"],
+        )
+        _finish_delivery(db, delivery, "sent", result.data)
+        return {"status": "sent", "channel": "outlook", "delivery": _delivery_response(delivery)}
+    except GraphIntegrationError as exc:
+        _fail_delivery(db, delivery, exc)
+        raise _http_error(exc) from exc
+
+
+@router.post("/outlook/events")
+def create_outlook_event(data: dict, db: Session = Depends(get_db)):
+    request_payload = _event_request_payload(data)
+    delivery = _create_delivery(
+        db,
+        "Outlook",
+        "event",
+        _recipient_target(request_payload.get("attendees") or []),
+        request_payload["subject"],
+        request_payload,
+    )
+    try:
+        result = GraphClient(settings).create_calendar_event(request_payload, online_meeting=False)
+        _finish_delivery(db, delivery, "created", result.data)
+        return {"status": "created", "channel": "outlook", "delivery": _delivery_response(delivery)}
+    except GraphIntegrationError as exc:
+        _fail_delivery(db, delivery, exc)
+        raise _http_error(exc) from exc
+
+
+@router.post("/teams/calendar")
+def create_teams_calendar_event(data: dict, db: Session = Depends(get_db)):
+    request_payload = _event_request_payload(data)
+    delivery = _create_delivery(
+        db,
+        "Teams",
+        "calendar",
+        _recipient_target(request_payload.get("attendees") or []),
+        request_payload["subject"],
+        request_payload,
+    )
+    try:
+        result = GraphClient(settings).create_calendar_event(request_payload, online_meeting=True)
+        _finish_delivery(db, delivery, "created", result.data)
+        return {"status": "created", "channel": "teams", "delivery": _delivery_response(delivery)}
+    except GraphIntegrationError as exc:
+        _fail_delivery(db, delivery, exc)
+        raise _http_error(exc) from exc
+
+
+@router.post("/{provider}/link")
+def link_integration(provider: str, data: dict | None = None, db: Session = Depends(get_db)):
+    data = data or {}
+    conn = IntegrationConnection(provider=provider, account_label=data.get("account_label"), linked_at=datetime.utcnow())
+    db.add(conn)
+    db.commit()
+    db.refresh(conn)
+    create_log(db, "info", f"Integration linked: {provider}", "integration", conn.id)
+    return conn
+
+
+@router.post("/{provider}/unlink")
+def unlink_integration(provider: str, db: Session = Depends(get_db)):
+    conn = db.query(IntegrationConnection).filter(IntegrationConnection.provider == provider, IntegrationConnection.is_deleted == False).first()
+    if not conn:
+        raise HTTPException(404)
+    conn.is_deleted = True
+    conn.unlinked_at = datetime.utcnow()
+    db.commit()
+    create_log(db, "warning", f"Integration unlinked: {provider}", "integration", conn.id)
+    return {"status": "unlinked"}
+
+
+def _create_delivery(
+    db: Session,
+    provider: str,
+    delivery_type: str,
+    target: str | None,
+    subject: str | None,
+    request_payload: dict[str, Any],
+) -> IntegrationDelivery:
+    delivery = IntegrationDelivery(
+        provider=provider,
+        delivery_type=delivery_type,
+        target=target,
+        subject=subject,
+        status="pending",
+        request_json=_json_dumps(sanitize_for_storage(request_payload)),
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(delivery)
+    db.commit()
+    db.refresh(delivery)
+    return delivery
+
+
+def _finish_delivery(db: Session, delivery: IntegrationDelivery, status: str, response_payload: Any) -> None:
+    delivery.status = status
+    delivery.response_json = _json_dumps(sanitize_for_storage(response_payload))
+    delivery.error_message = None
+    delivery.sent_at = datetime.utcnow()
+    delivery.failed_at = None
+    delivery.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(delivery)
+    create_log(
+        db,
+        "info",
+        f"Integration delivery {status}: {delivery.provider} {delivery.delivery_type}",
+        "integration_delivery",
+        delivery.id,
+        metadata={"provider": delivery.provider, "delivery_type": delivery.delivery_type, "target": delivery.target},
+    )
+
+
+def _fail_delivery(db: Session, delivery: IntegrationDelivery, exc: GraphIntegrationError) -> None:
+    delivery.status = "not_configured" if isinstance(exc, GraphConfigurationError) else "failed"
+    delivery.error_message = exc.message
+    delivery.response_json = _json_dumps(sanitize_for_storage(exc.details))
+    delivery.failed_at = datetime.utcnow()
+    delivery.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(delivery)
+    create_log(
+        db,
+        "warning" if isinstance(exc, GraphConfigurationError) else "error",
+        f"Integration delivery {delivery.status}: {delivery.provider} {delivery.delivery_type}",
+        "integration_delivery",
+        delivery.id,
+        metadata={"provider": delivery.provider, "delivery_type": delivery.delivery_type, "target": delivery.target, "error": exc.message},
+    )
+
+
+def _delivery_response(delivery: IntegrationDelivery) -> dict[str, Any]:
+    return {
+        "id": delivery.id,
+        "provider": delivery.provider,
+        "delivery_type": delivery.delivery_type,
+        "target": delivery.target,
+        "subject": delivery.subject,
+        "status": delivery.status,
+        "error_message": delivery.error_message,
+        "created_at": delivery.created_at,
+        "updated_at": delivery.updated_at,
+        "sent_at": delivery.sent_at,
+        "failed_at": delivery.failed_at,
+    }
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _http_error(exc: GraphIntegrationError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+def _normalize_recipients(value: Any) -> list[dict[str, str]]:
+    items: list[Any]
+    if isinstance(value, str):
+        items = [item.strip() for item in value.replace(";", ",").split(",")]
+    elif isinstance(value, list):
+        items = value
+    elif value:
+        items = [value]
+    else:
+        items = []
+
+    recipients: list[dict[str, str]] = []
+    for item in items:
+        if isinstance(item, str):
+            address = item.strip()
+            name = ""
+        elif isinstance(item, dict):
+            address = str(item.get("address") or item.get("email") or "").strip()
+            name = str(item.get("name") or "").strip()
+        else:
+            continue
+        if address:
+            recipient: dict[str, str] = {"address": address}
+            if name:
+                recipient["name"] = name
+            recipients.append(recipient)
+    return recipients
+
+
+def _recipient_target(recipients: list[dict[str, str]]) -> str:
+    addresses = [recipient.get("address", "") for recipient in recipients if recipient.get("address")]
+    return ", ".join(addresses) if addresses else "-"
+
+
+def _event_request_payload(data: dict[str, Any]) -> dict[str, Any]:
+    subject = str(data.get("subject") or data.get("title") or "").strip()
+    start = str(data.get("start_datetime") or data.get("start") or "").strip()
+    end = str(data.get("end_datetime") or data.get("end") or "").strip()
+    if not subject:
+        raise HTTPException(422, "Informe o titulo do evento.")
+    if not start or not end:
+        raise HTTPException(422, "Informe inicio e fim do evento.")
+    return {
+        **data,
+        "subject": subject,
+        "body": str(data.get("body") or ""),
+        "body_content_type": str(data.get("body_content_type") or "HTML"),
+        "start_datetime": start,
+        "end_datetime": end,
+        "attendees": _normalize_recipients(data.get("attendees") or data.get("to_recipients") or []),
+    }
+
+
+def _teams_default_target() -> str:
+    if str(settings.MS_GRAPH_TEAMS_WEBHOOK_URL or "").strip():
+        return "Teams webhook"
+    team_id = str(settings.MS_GRAPH_TEAMS_TEAM_ID or "").strip()
+    channel_id = str(settings.MS_GRAPH_TEAMS_CHANNEL_ID or "").strip()
+    if team_id and channel_id:
+        return f"{team_id}/{channel_id}"
+    return "Teams"
+
+
+def _ensure_teams_graph_message_configured() -> None:
+    missing = missing_base_graph_settings(settings)
+    if not str(settings.MS_GRAPH_TEAMS_TEAM_ID or "").strip():
+        missing.append("MS_GRAPH_TEAMS_TEAM_ID")
+    if not str(settings.MS_GRAPH_TEAMS_CHANNEL_ID or "").strip():
+        missing.append("MS_GRAPH_TEAMS_CHANNEL_ID")
+    if missing:
+        raise GraphConfigurationError(missing)
