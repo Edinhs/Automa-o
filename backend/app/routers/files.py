@@ -304,13 +304,21 @@ def create_manual_upload(
 
 @router.get("/upload-baseline/{automation_id}")
 def get_upload_baseline(automation_id: int, db: Session = Depends(get_db)):
+    # Inclui todos os registros que atingiram um estado terminal de sucesso:
+    # - uploaded_at preenchido (upload confirmado pelo checkpoint do lote), OU
+    # - status "ready" ou "uploaded" (fallback para registros legados sem uploaded_at).
+    # Exclui status de erro/revisao manual para que arquivos com falha possam ser
+    # reprocessados normalmente em ciclos futuros (comportamento aceito pelo usuario).
     files = (
         db.query(WorkspaceFile)
         .filter(
             WorkspaceFile.automation_id == automation_id,
             WorkspaceFile.is_deleted == False,
             WorkspaceFile.original_path.isnot(None),
-            WorkspaceFile.uploaded_at.isnot(None),
+            or_(
+                WorkspaceFile.uploaded_at.isnot(None),
+                WorkspaceFile.status.in_(["ready", "uploaded"]),
+            ),
         )
         .order_by(WorkspaceFile.uploaded_at.desc(), WorkspaceFile.id.desc())
         .all()
@@ -320,7 +328,9 @@ def get_upload_baseline(automation_id: int, db: Session = Depends(get_db)):
             "id": file.id,
             "original_path": file.original_path,
             "content_sha256": file.content_sha256,
+            "status": file.status,
             "uploaded_at": sao_paulo_utc_iso(file.uploaded_at),
+            "ready_at": sao_paulo_utc_iso(file.ready_at),
         }
         for file in files
     ]

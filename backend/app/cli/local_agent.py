@@ -370,32 +370,87 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parse_iso_to_timestamp(value: str | None) -> float | None:
+    """Converte string ISO 8601 (com ou sem offset de fuso) para POSIX timestamp float.
+
+    Aceita formatos como "2024-01-15T10:30:00-03:00", "2024-01-15T10:30:00Z" e
+    "2024-01-15T10:30:00" (naive, tratado como UTC por seguranca).
+    Retorna None se a conversao falhar.
+    """
+    if not value:
+        return None
+    import datetime as _dt
+    raw = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = _dt.datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            # String sem fuso: assume UTC (valores armazenados pelo backend sao UTC naive)
+            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+        return parsed.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+# Tipo do baseline: source_key -> {"hashes": set[str], "last_ts": float | None}
+# "last_ts" e o maior timestamp POSIX de uploaded_at ou ready_at conhecido para aquele caminho.
+# Usado como fallback quando content_sha256 nao foi armazenado (registros legados ou migrados).
+BaselineEntry = dict  # {"hashes": set[str], "last_ts": float | None}
+
+
 def uploaded_content_baseline(
     session: requests.Session,
     automation_id: int | None,
     log,
-) -> dict[str, set[str]]:
+) -> dict[str, BaselineEntry]:
+    """Retorna baseline de arquivos ja processados com sucesso para a automacao.
+
+    Estrutura retornada:
+        {source_key: {"hashes": set_of_sha256, "last_ts": posix_float_or_None}}
+
+    - Se "hashes" nao esta vazio: arquivo e considerado inalterado se seu sha256 atual
+      estiver no set (comparacao de conteudo exata).
+    - Se "hashes" esta vazio mas "last_ts" nao e None: arquivo e considerado inalterado
+      se seu mtime no disco for <= last_ts (fallback para registros legados sem sha256).
+    - Se ambos estao vazios/None: trata como nao visto anteriormente (nunca re-envia sem
+      motivo, mas isso nao deveria ocorrer pois o filtro do backend so retorna
+      registros com uploaded_at preenchido ou status terminal de sucesso).
+    """
     if not automation_id:
         return {}
     rows = get_json(session, f"/api/files/upload-baseline/{automation_id}")
     if not isinstance(rows, list):
         raise RuntimeError("Resposta invalida ao consultar baseline de arquivos enviados.")
-    baseline: dict[str, set[str]] = {}
+    baseline: dict[str, BaselineEntry] = {}
+    no_hash_count = 0
     for row in rows:
         if not isinstance(row, dict) or not row.get("original_path"):
             continue
         source_key = normalized_source_key(row["original_path"])
+        # Mantemos apenas a entrada mais recente por caminho (rows ja ordenados por
+        # uploaded_at DESC, id DESC pelo backend).
         if source_key in baseline:
             continue
         hashes: set[str] = set()
         if row.get("content_sha256"):
             hashes.add(str(row["content_sha256"]))
-        baseline[source_key] = hashes
+        else:
+            no_hash_count += 1
+        # last_ts: maior entre uploaded_at e ready_at para comparacao de mtime
+        ts_uploaded = _parse_iso_to_timestamp(row.get("uploaded_at"))
+        ts_ready = _parse_iso_to_timestamp(row.get("ready_at"))
+        last_ts: float | None = None
+        if ts_uploaded is not None and ts_ready is not None:
+            last_ts = max(ts_uploaded, ts_ready)
+        elif ts_uploaded is not None:
+            last_ts = ts_uploaded
+        elif ts_ready is not None:
+            last_ts = ts_ready
+        baseline[source_key] = {"hashes": hashes, "last_ts": last_ts}
     log(
         "info",
         "Baseline de arquivos enviados carregado.",
         automation_id=automation_id,
-        metadata={"tracked_paths": len(baseline)},
+        metadata={"tracked_paths": len(baseline), "no_hash_count": no_hash_count},
     )
     return baseline
 
@@ -467,8 +522,52 @@ def prepare_folder_upload_payload(
             log("error", f"Arquivo nao pode ser assinado para comparacao: {source.name}", automation_id=automation_id, metadata=local_report_metadata("file_signature_failed", failure))
             continue
         source_key = normalized_source_key(source)
-        prior_hashes = baseline.get(source_key)
-        unchanged = prior_hashes is not None and content_sha256 in prior_hashes
+        prior_entry = baseline.get(source_key)
+        # --- dedup persistente entre execucoes agendadas ---
+        # prior_entry e None  -> arquivo nunca processado (new)
+        # prior_entry["hashes"] contem o sha256 atual -> conteudo identico (unchanged)
+        # prior_entry["hashes"] vazio (registro legado sem sha256) -> fallback por mtime:
+        #   se mtime do arquivo no disco <= last_ts do upload anterior, nao houve alteracao
+        #   (unchanged); caso contrario, arquivo foi modificado apos o upload (updated).
+        unchanged = False
+        if prior_entry is not None:
+            prior_hashes = prior_entry["hashes"]
+            if prior_hashes:
+                # Comparacao de conteudo exata (caminho principal)
+                unchanged = content_sha256 in prior_hashes
+            else:
+                # Fallback por mtime para registros legados sem sha256 armazenado
+                last_ts = prior_entry.get("last_ts")
+                if last_ts is not None:
+                    try:
+                        file_mtime = source.stat().st_mtime
+                        unchanged = file_mtime <= last_ts
+                        if not unchanged:
+                            log(
+                                "info",
+                                f"Arquivo modificado apos ultimo upload (mtime fallback): {source.name}",
+                                automation_id=automation_id,
+                                metadata={
+                                    "original_path": str(source),
+                                    "file_mtime": file_mtime,
+                                    "last_upload_ts": last_ts,
+                                },
+                            )
+                    except OSError:
+                        # Nao conseguiu ler mtime; trata como modificado (conservador)
+                        unchanged = False
+                else:
+                    # Sem sha256 e sem timestamp: nao ha como confirmar que e o mesmo
+                    # conteudo. Trata como inalterado para evitar reenvio redundante de
+                    # registros antigos sem metadados suficientes.
+                    unchanged = True
+                    log(
+                        "info",
+                        f"Arquivo com registro anterior sem hash nem timestamp; assumindo inalterado: {source.name}",
+                        automation_id=automation_id,
+                        metadata={"original_path": str(source), "content_sha256": content_sha256},
+                    )
+        # ---------------------------------------------------
         if unchanged and not full_execution:
             skipped_unchanged.append(str(source))
             log(
@@ -478,7 +577,8 @@ def prepare_folder_upload_payload(
                 metadata={"original_path": str(source), "content_sha256": content_sha256},
             )
             continue
-        classification = "audit_duplicate" if unchanged else ("updated" if prior_hashes is not None else "new")
+        prior_known = prior_entry is not None
+        classification = "audit_duplicate" if unchanged else ("updated" if prior_known else "new")
         classifications[classification] += 1
         selected_files.append(source)
         source_metadata[source_key] = {"content_sha256": content_sha256, "classification": classification}
@@ -712,7 +812,9 @@ def process_upload(session: requests.Session, task: dict[str, Any], payload: dic
                 },
             )
 
-    staging_dir = payload.get("temp_folder_path")
+    # A automacao NAO deleta arquivos da pasta temp (staging): a limpeza automatica
+    # (shutil.rmtree) foi desativada de proposito, preservando os arquivos copiados para
+    # auditoria/reprocessamento. A limpeza, quando necessaria, e feita manualmente.
     try:
         result = upload_files_to_workspace(
             task_id=task["id"],
@@ -740,18 +842,6 @@ def process_upload(session: requests.Session, task: dict[str, Any], payload: dic
                     f"Upload abortado devido a falha na task: {upload_exc}",
                 )
         raise
-    finally:
-        # A automacao NAO deve deletar arquivos da pasta temp (staging).
-        # A limpeza automatica (shutil.rmtree) foi desativada de proposito: os
-        # arquivos copiados para o staging sao preservados para auditoria/reprocessamento.
-        # A limpeza, quando necessaria, deve ser feita manualmente.
-        if staging_dir and os.path.isdir(staging_dir):
-            log(
-                "info",
-                "Pasta temporaria de staging preservada (limpeza automatica desativada).",
-                automation_id=automation_id,
-                metadata={"staging_dir": staging_dir},
-            )
 
 
 def _item_by_name(files: list[Any], file_name: str) -> dict[str, Any]:
@@ -785,6 +875,8 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
     automation_id = payload.get("automation_id")
     should_continue = stop_checker(session, task["id"], automation_id, log)
     should_continue()
+    if task.get("created_at"):
+        payload["task_created_at"] = task["created_at"]
     result = monitor_workspace_files_status(task_id=task["id"], user_id=user_id, payload=payload, log=log, should_continue=should_continue)
     should_continue()
     files = payload.get("files") or []
@@ -868,6 +960,7 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
             "temp_folder_path": pdf_dir or payload.get("temp_folder_path"),
             # Reenvio NAO deve disparar novo monitoramento.
             "start_monitoring_after_upload": False,
+            "monitoring_timeout_minutes": 0,
         }
         for key in ("completed_batches", "scan_stats", "copy_stats"):
             resend_payload.pop(key, None)
@@ -954,6 +1047,9 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
             }
         ],
         "batch_size": 1,
+        # Reenvio individual (PDF) tambem NAO deve disparar novo monitoramento.
+        "start_monitoring_after_upload": False,
+        "monitoring_timeout_minutes": 0,
     }
     should_continue()
     upload_task_id = create_agent_task(session, "upload_files_to_workspace", upload_payload, max_attempts)

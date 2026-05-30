@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from app.core.config import settings
 from app.services.playwright.browser import click_first, open_persistent_chromium, page_text, safe_error_screenshot, wait_for_text
@@ -212,15 +212,43 @@ def wait_for_expected_rows(
     return statuses or read_file_statuses(page, expected_names)
 
 
-def wait_monitor_delay(timeout_minutes: int, log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
+def wait_monitor_delay(
+    timeout_minutes: int,
+    log: Callable,
+    should_continue: Callable[[], bool] | None = None,
+    task_created_at: Optional[str] = None,
+) -> None:
     """Espera o tempo determinado pela automacao SEM abrir o navegador (sem polling continuo).
 
-    O monitoramento e feito uma unica vez, depois desse tempo.
+    O monitoramento e feito uma unica vez, depois desse tempo. Desconta o tempo decorrido na fila.
     """
-    seconds = max(0, int(timeout_minutes) * 60)
+    from datetime import datetime, timezone
+    import math
+
+    total_seconds = max(0, int(timeout_minutes) * 60)
+    elapsed_seconds = 0
+    if task_created_at:
+        try:
+            created_str = str(task_created_at)
+            if created_str.endswith("Z"):
+                created_str = created_str[:-1] + "+00:00"
+            created_dt = datetime.fromisoformat(created_str)
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            
+            now_utc = datetime.now(timezone.utc)
+            elapsed_seconds = max(0, int((now_utc - created_dt).total_seconds()))
+        except Exception as exc:
+            log("warning", f"Nao foi possivel calcular o tempo decorrido na fila: {exc}")
+
+    seconds = max(0, total_seconds - elapsed_seconds)
     if seconds <= 0:
+        if elapsed_seconds > 0:
+            log("info", f"Tempo de espera decorrido na fila ({elapsed_seconds // 60} min passados). Seguindo para leitura de status.")
         return
-    log("info", f"Aguardando {timeout_minutes} min antes do monitoramento unico (sem navegador aberto).")
+
+    minutes_left = int(math.ceil(seconds / 60))
+    log("info", f"Aguardando {minutes_left} min antes do monitoramento unico (sem navegador aberto).")
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         check_continue(should_continue)
@@ -329,13 +357,15 @@ def find_file_row(page, file_name: str):
     ]
     for locator in candidates:
         try:
+            # Espera de até 6s para a linha do arquivo ficar visível, mitigando flutuações do Ajax
+            locator.first.wait_for(state="visible", timeout=6000)
             count = min(locator.count(), 5)
         except Exception:
             count = 0
         for index in range(count):
             row = locator.nth(index)
             try:
-                if row.is_visible(timeout=500):
+                if row.is_visible(timeout=1000):
                     return row
             except Exception:
                 continue
@@ -343,22 +373,73 @@ def find_file_row(page, file_name: str):
 
 
 def click_delete_confirm(page) -> bool:
+    """Confirma a delecao, dando preferencia a um botao DENTRO de um modal/dialog.
+
+    Restringir ao dialog evita clicar num "Delete"/"OK"/"Confirm" perdido em outro ponto da
+    pagina (falso positivo). Se nao houver dialog, tenta a pagina inteira como ultimo recurso.
+    """
+    scopes: list[Any] = []
+    for role in ("dialog", "alertdialog"):
+        try:
+            candidate = page.get_by_role(role)
+            if candidate.count():
+                scopes.append(candidate.first)
+        except Exception:
+            continue
+    scopes.append(page)
+    for scope in scopes:
+        try:
+            if click_first(
+                [lambda text=text: scope.get_by_role("button", name=text) for text in DELETE_CONFIRM_TEXTS]
+                + [lambda text=text: scope.get_by_text(text, exact=True) for text in DELETE_CONFIRM_TEXTS],
+                timeout_ms=1500,
+            ):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def actions_cell(row):
+    """Ultima celula da linha (coluna Actions), onde fica o icone de deletar."""
+    for cell_selector in ("td:last-child", "[role='gridcell']:last-child", "[role='cell']:last-child"):
+        try:
+            cell = row.locator(cell_selector).last
+            if cell.count():
+                return cell
+        except Exception:
+            continue
+    return None
+
+
+def dump_actions_cell_html(row, log: Callable, file_name: str) -> None:
+    """Loga o HTML da celula Actions para mapearmos o seletor exato do icone de delete.
+
+    Acionado quando nao achamos/confirmamos o controle: o aria-label/title/classe reais do
+    icone ficam no log para deixarmos o clique cirurgico na proxima execucao.
+    """
+    target = actions_cell(row) or row
     try:
-        return click_first(
-            [lambda text=text: page.get_by_role("button", name=text) for text in DELETE_CONFIRM_TEXTS]
-            + [lambda text=text: page.get_by_text(text, exact=True) for text in DELETE_CONFIRM_TEXTS],
-            timeout_ms=2000,
-        )
+        html = target.evaluate("el => el.outerHTML")
     except Exception:
-        return False
+        return
+    if html:
+        log(
+            "warning",
+            f"HTML da area Actions de '{file_name}' (para mapear o icone de delete): {clean_text(html)[:1500]}",
+            metadata={"actions_html": html},
+        )
 
 
 def click_row_delete_control(row, log: Callable, file_name: str) -> bool:
-    """Clica no controle de deletar DENTRO da linha do arquivo (icone folha+x na coluna Actions).
+    """Clica no controle de deletar DENTRO da linha do arquivo (icone na coluna Actions).
 
-    Tenta primeiro por aria-label/title/texto; se nao houver, clica no unico controle clicavel
-    da ultima celula (Actions). A delecao so e considerada efetiva apos a confirmacao por F5
-    feita pelo chamador (a linha precisa sumir), entao um clique impreciso nunca apaga e reenvia.
+    Ordem: (1) botao cujo aria-label/title casa o NOME do arquivo; (2) botao com 'Delete';
+    (3) textos conhecidos de delete; (4) primeiro controle clicavel REAL (button/link) da
+    celula Actions. Clicar um <button>/<a> e mais confiavel que clicar um <svg>/<img> solto
+    (o icone costuma ser filho de um botao). A delecao so e considerada efetiva apos a
+    verificacao por F5 do chamador (a linha precisa sumir), entao um clique impreciso nunca
+    apaga e reenvia por engano.
     """
     # Caminho preciso (AWS Cloudscape): o botao de deletar tem aria-label/title = 'Delete "<arquivo>"'.
     # Casar pelo NOME do arquivo no aria-label e cirurgico; combinado ao escopo de linha, e exato.
@@ -377,8 +458,8 @@ def click_row_delete_control(row, log: Callable, file_name: str) -> bool:
     for text in DELETE_FILE_CONTROL_TEXTS:
         for lookup in (
             lambda t=text: row.get_by_role("button", name=t),
-            lambda t=text: row.locator(f"[aria-label*='{t}' i]"),
-            lambda t=text: row.locator(f"[title*='{t}' i]"),
+            lambda t=text: row.locator(f"button[aria-label*='{t}' i], button[title*='{t}' i]"),
+            lambda t=text: row.locator(f"[aria-label*='{t}' i], [title*='{t}' i]"),
         ):
             try:
                 control = lookup()
@@ -387,21 +468,19 @@ def click_row_delete_control(row, log: Callable, file_name: str) -> bool:
                     return True
             except Exception:
                 continue
-    for cell_selector in ("td:last-child", "[role='gridcell']:last-child", "[role='cell']:last-child"):
-        try:
-            cell = row.locator(cell_selector).last
-            controls = cell.locator("button, [role='button'], a, svg, img")
-            count = controls.count()
-        except Exception:
-            count = 0
-            controls = None
-        if controls is not None and count >= 1:
+    cell = actions_cell(row)
+    if cell is not None:
+        # Preferir controles clicaveis reais; evitar clicar num svg/img solto (pode nao ser o alvo).
+        for inner in ("button", "[role='button']", "a[role='button']", "a", "[onclick]"):
             try:
-                controls.first.click(timeout=4000)
-                return True
+                controls = cell.locator(inner)
+                if controls.count() and controls.first.is_visible(timeout=400):
+                    controls.first.click(timeout=4000)
+                    return True
             except Exception:
                 continue
     log("warning", f"Controle de deletar nao encontrado na linha de '{file_name}'.")
+    dump_actions_cell_html(row, log, file_name)
     return False
 
 
@@ -424,19 +503,60 @@ def f5_reopen_files(page, payload: dict[str, Any], workspace_name: str, log: Cal
         log("warning", f"Nao foi possivel reabrir a aba Files apos o F5: {exc}")
 
 
-def find_first_present_paginated(page, names: list[str], should_continue: Callable[[], bool] | None = None) -> str | None:
-    """A partir da pagina atual (1), percorre as paginas e retorna o primeiro nome presente."""
+def locate_row_paginated(page, file_name: str, should_continue: Callable[[], bool] | None = None):
+    """A partir da pagina atual, percorre as paginas e retorna a LINHA do arquivo (ou None)."""
     visited = 0
     max_pages = 200
     while visited < max_pages:
         visited += 1
         check_continue(should_continue)
-        for name in names:
-            if find_file_row(page, name) is not None:
-                return name
+        row = find_file_row(page, file_name)
+        if row is not None:
+            return row
         if not goto_next_files_page(page):
             return None
     return None
+
+
+def delete_one_with_verify(
+    page,
+    target: str,
+    payload: dict[str, Any],
+    workspace_name: str,
+    log: Callable,
+    should_continue: Callable[[], bool] | None = None,
+    attempts: int = 2,
+) -> bool:
+    """Deleta um arquivo e CONFIRMA via F5 que a linha sumiu. So retorna True se sumiu mesmo.
+
+    Sem essa verificacao, um clique impreciso registraria "deletado" e dispararia o reenvio,
+    deixando o arquivo duplicado no workspace. Aqui, enquanto a linha existir, nao ha sucesso.
+    """
+    last_row = None
+    # F5 antes da primeira busca: a leitura de status percorre TODAS as paginas e deixa o cursor
+    # na ultima; como locate_row_paginated so avanca, sem este reset um alvo numa pagina anterior
+    # nao seria encontrado e viraria "deletado" por engano (reenvio -> duplicacao no workspace).
+    f5_reopen_files(page, payload, workspace_name, log, should_continue)
+    for attempt in range(1, attempts + 1):
+        check_continue(should_continue)
+        row = locate_row_paginated(page, target, should_continue)
+        if row is None:
+            log("info", f"'{target}' nao esta na tabela (nada para deletar).")
+            return True
+        last_row = row
+        if not click_row_delete_control(row, log, target):
+            return False
+        click_delete_confirm(page)  # melhor esforco: algumas UIs deletam sem modal de confirmacao
+        f5_reopen_files(page, payload, workspace_name, log, should_continue)
+        if locate_row_paginated(page, target, should_continue) is None:
+            log("info", f"Delete confirmado (linha sumiu) para: {target}")
+            return True
+        log("warning", f"'{target}' continua na tabela apos o delete (tentativa {attempt}/{attempts}).")
+    # Falhou apos as tentativas: registra o HTML da area Actions para mapearmos o icone correto.
+    fresh = locate_row_paginated(page, target, should_continue) or last_row
+    if fresh is not None:
+        dump_actions_cell_html(fresh, log, target)
+    return False
 
 
 def delete_all_to_fix(
@@ -447,42 +567,21 @@ def delete_all_to_fix(
     log: Callable,
     should_continue: Callable[[], bool] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Deleta na web cada arquivo nao-Ready, confirmando por F5 (a linha precisa sumir).
-
-    Retorna (deletados_confirmados, falhas). Falhas NAO sao reenviadas (viram revisao manual),
-    para nunca duplicar arquivos no workspace.
-    """
+    """Deleta na web cada arquivo nao-Ready, confirmando via F5 que a linha realmente sumiu."""
     remaining = list(dict.fromkeys(names))
     deleted: list[str] = []
     failed: list[str] = []
-    safety = 0
-    max_iter = len(remaining) * 3 + 5
-    while remaining and safety < max_iter:
-        safety += 1
-        # Comeca cada passada na primeira pagina (estado limpo).
-        f5_reopen_files(page, payload, workspace_name, log, should_continue=should_continue)
-        target = find_first_present_paginated(page, remaining, should_continue=should_continue)
-        if target is None:
-            failed.extend(remaining)
-            remaining.clear()
-            break
-        row = find_file_row(page, target)
-        clicked = click_row_delete_control(row, log, target) if row is not None else False
-        if clicked:
-            click_delete_confirm(page)
-            log("info", f"Delete acionado na web para: {target}; recarregando com F5.")
-        # F5 apos cada clique (a delecao pode demorar).
-        f5_reopen_files(page, payload, workspace_name, log, should_continue=should_continue)
-        if clicked and find_first_present_paginated(page, [target], should_continue=should_continue) is None:
+
+    # Sem open_files_tab aqui: delete_one_with_verify faz F5 (que reabre a aba Files na pagina 1)
+    # antes de cada busca; abrir a aba aqui seria trabalho redundante.
+    for target in remaining:
+        check_continue(should_continue)
+        if delete_one_with_verify(page, target, payload, workspace_name, log, should_continue=should_continue):
             deleted.append(target)
-            log("info", f"Delecao confirmada (a linha sumiu): {target}")
         else:
+            log("warning", f"Delete nao confirmado para: {target} (linha permaneceu na tabela).")
             failed.append(target)
-            log("warning", f"Delecao NAO confirmada para '{target}'; marcado para revisao manual (nao sera reenviado).")
-        if target in remaining:
-            remaining.remove(target)
-    if remaining:
-        failed.extend(remaining)
+
     return deleted, failed
 
 
@@ -502,9 +601,10 @@ def monitor_workspace_files_status(
         raise PlaywrightAutomationError("Payload sem arquivos para monitorar.")
 
     timeout_minutes = int(payload.get("monitoring_timeout_minutes") or settings.DEFAULT_MONITORING_TIMEOUT_MINUTES)
+    task_created_at = payload.get("task_created_at")
 
     # 1) Espera o tempo determinado pela automacao, SEM navegador aberto (monitoramento unico).
-    wait_monitor_delay(timeout_minutes, log, should_continue=should_continue)
+    wait_monitor_delay(timeout_minutes, log, should_continue=should_continue, task_created_at=task_created_at)
 
     browser = None
     try:
@@ -551,9 +651,17 @@ def monitor_workspace_files_status(
             page, deletable, payload, workspace_name, log, should_continue=should_continue
         )
 
-        # NotFound nao estao na tabela (nada a deletar) -> serao reenviados mesmo assim.
-        to_resend = deleted + not_found
-        manual_review = pending + delete_failed
+        # So reenviamos como PDF o que foi REALMENTE removido da web (delete confirmado por F5)
+        # ou que nunca esteve na tabela (NotFound). Delete nao confirmado NAO e reenviado: vira
+        # revisao manual, para nunca duplicar o arquivo no workspace (decisao do usuario).
+        to_resend = list(dict.fromkeys(deleted + not_found))
+        manual_review = list(dict.fromkeys(pending + delete_failed))
+        if delete_failed:
+            log(
+                "warning",
+                "Delete nao confirmado: enviados para revisao manual (sem reenvio, para nao duplicar).",
+                metadata={"files": delete_failed},
+            )
         return {
             "status": "completed",
             "ready": ready,

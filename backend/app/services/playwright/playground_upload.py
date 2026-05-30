@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import os
 import shutil
 import subprocess
 import time
@@ -563,8 +565,9 @@ def upload_batch(
     proximo lote. Se surgir o vermelho "Upload Error", levanta UploadFailed("uploading error")
     para o chamador isolar o arquivo corrompido.
 
-    No ultimo lote (is_last_batch=True), aguarda a conclusao total antes de retornar para
-    nao truncar o envio ao fechar o navegador.
+    No ultimo lote (is_last_batch=True), NAO espera conclusao: assim que o verde "Uploading
+    Files" aparece, retorna e o navegador fecha (decisao do usuario). O monitoramento unico
+    posterior detecta e trata os arquivos nao-Ready (deletar + PDF + reenviar).
     """
     paths = [str(Path(item["path"]).resolve()) for item in batch]
     missing = [path for path in paths if not Path(path).exists()]
@@ -582,11 +585,14 @@ def upload_batch(
     wait_for_batch_sent(page, log, should_continue=should_continue)
 
     if is_last_batch:
-        # Sem proximo lote: aguarda a conclusao total para nao truncar o envio.
-        wait_for_batch_complete(page, log, should_continue=should_continue)
+        # Decisao do usuario: assim que o verde "Uploading Files" aparece, FECHA o Chromium sem
+        # esperar a conclusao nem janela de erro. O monitoramento unico (que roda depois desta
+        # task de upload) detecta qualquer arquivo nao-Ready (error/processing) e trata:
+        # deletar na web + converter para PDF + reenviar.
+        log("info", "Ultimo lote enviado (Uploading Files); fechando o Chromium sem esperar.")
     else:
-        # Janela curta vigiando o vermelho (o erro costuma surgir no ultimo arquivo do lote)
-        # antes de seguir direto ao Choose Files do proximo lote, sem recarregar a tela.
+        # Entre lotes: janela curta vigiando o vermelho (o erro costuma surgir no ultimo arquivo
+        # do lote) antes de seguir direto ao Choose Files do proximo lote, sem recarregar a tela.
         if watch_for_error_window(page, POST_SENT_ERROR_WATCH_SECONDS, should_continue=should_continue):
             raise UploadFailed("uploading error")
         log("info", "Lote enviado; seguindo ao proximo lote na mesma tela.")
@@ -908,6 +914,94 @@ def libreoffice_profile_uri(target_dir: Path) -> str:
     return profile_dir.resolve().as_uri()
 
 
+# Extensoes por aplicativo do Office que sabemos converter para PDF via COM.
+WORD_COM_EXTENSIONS = {".doc", ".docx", ".docm", ".dot", ".dotx", ".rtf", ".odt", ".txt"}
+EXCEL_COM_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".xlsb", ".csv", ".ods"}
+POWERPOINT_COM_EXTENSIONS = {".ppt", ".pptx", ".pptm", ".odp"}
+
+# Script PowerShell que dirige o Office (Word/Excel/PowerPoint) por COM e exporta para PDF.
+# Os caminhos chegam por variaveis de ambiente (HUB_SRC/HUB_DST/HUB_KIND) para evitar
+# problemas de aspas/escape e injecao. Roda via -EncodedCommand, que NAO esbarra na
+# ExecutionPolicy de arquivos .ps1 (comum em notebooks corporativos travados).
+_OFFICE_COM_PS_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$src = $env:HUB_SRC
+$dst = $env:HUB_DST
+$kind = $env:HUB_KIND
+$app = $null
+try {
+    if ($kind -eq 'word') {
+        $app = New-Object -ComObject Word.Application
+        $app.Visible = $false
+        $app.DisplayAlerts = 0
+        $doc = $app.Documents.Open($src, $false, $true, $false)
+        $doc.ExportAsFixedFormat($dst, 17)   # wdExportFormatPDF = 17
+        $doc.Close()
+    } elseif ($kind -eq 'excel') {
+        $app = New-Object -ComObject Excel.Application
+        $app.Visible = $false
+        $app.DisplayAlerts = $false
+        $wb = $app.Workbooks.Open($src, 0, $true)
+        $wb.ExportAsFixedFormat(0, $dst)     # xlTypePDF = 0
+        $wb.Close($false)
+    } elseif ($kind -eq 'powerpoint') {
+        $app = New-Object -ComObject PowerPoint.Application
+        $pres = $app.Presentations.Open($src, $true, $false, $false)  # ReadOnly, Untitled, sem janela
+        $pres.SaveAs($dst, 32)               # ppSaveAsPDF = 32
+        $pres.Close()
+    } else {
+        throw "kind invalido: $kind"
+    }
+} finally {
+    if ($app -ne $null) { try { $app.Quit() } catch {} }
+}
+"""
+
+
+def office_com_kind(suffix: str) -> str | None:
+    lower = (suffix or "").lower()
+    if lower in WORD_COM_EXTENSIONS:
+        return "word"
+    if lower in EXCEL_COM_EXTENSIONS:
+        return "excel"
+    if lower in POWERPOINT_COM_EXTENSIONS:
+        return "powerpoint"
+    return None
+
+
+def convert_office_via_com(source: Path, target_pdf: Path, log: Callable) -> bool:
+    """Converte para PDF via Microsoft Office (COM) usando PowerShell. True se gerou o PDF.
+
+    Usa o Office ja instalado na maquina (Word/Excel/PowerPoint): funciona offline, nao exige
+    LibreOffice e nao adiciona dependencia Python. Em maquina sem Windows ou com formato fora
+    do Office, retorna False para o chamador cair no LibreOffice.
+    """
+    if os.name != "nt":
+        return False
+    kind = office_com_kind(source.suffix)
+    if not kind:
+        return False
+    encoded = base64.b64encode(_OFFICE_COM_PS_SCRIPT.encode("utf-16-le")).decode("ascii")
+    env = {**os.environ, "HUB_SRC": str(source), "HUB_DST": str(target_pdf), "HUB_KIND": kind}
+    log("info", f"Conversao PDF via Microsoft Office ({kind}) iniciada.")
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+        )
+    except Exception as exc:
+        log("warning", f"Conversao via Office (COM) nao executou: {exc}")
+        return False
+    if result.returncode == 0 and target_pdf.exists():
+        return True
+    detail = (result.stderr or result.stdout or "").strip()
+    log("warning", f"Conversao via Office (COM) nao concluiu ({kind}): {detail[:500] or 'sem detalhe'}")
+    return False
+
+
 def convert_file_to_pdf(original_path: str, output_dir: str | None, log: Callable) -> str:
     source = Path(original_path)
     if not source.exists():
@@ -916,12 +1010,28 @@ def convert_file_to_pdf(original_path: str, output_dir: str | None, log: Callabl
         return str(source)
     if source.suffix.lower() not in SUPPORTED_OFFICE_EXTENSIONS:
         raise UnsupportedFormat(f"Formato sem conversor configurado: {source.suffix}")
-    soffice = find_soffice()
-    if not soffice:
-        raise ManualReviewRequired("LibreOffice/soffice nao encontrado para conversao PDF.")
     target_dir = Path(output_dir) if output_dir else runtime_path("TEMP_PATH")
     target_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = target_dir / f"{source.stem}.pdf"
     log("info", "Conversao PDF iniciada.")
+
+    # 1) Microsoft Office (COM): usa o Office ja instalado, offline e sem LibreOffice.
+    if convert_office_via_com(source, pdf_path, log):
+        log("info", f"PDF criado via Microsoft Office: {pdf_path}")
+        return str(pdf_path)
+
+    # 2) Fallback: LibreOffice/soffice, se estiver instalado.
+    soffice = find_soffice()
+    if not soffice:
+        raise ManualReviewRequired(
+            "Conversao PDF indisponivel: Microsoft Office (COM) nao converteu e LibreOffice/soffice nao foi encontrado."
+        )
+    # Remove um PDF parcial que uma tentativa COM falha possa ter deixado, para que o
+    # 'pdf_path.exists()' apos o LibreOffice signifique mesmo que ELE gerou o arquivo.
+    try:
+        pdf_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     result = subprocess.run(
         [
             soffice,
@@ -946,10 +1056,9 @@ def convert_file_to_pdf(original_path: str, output_dir: str | None, log: Callabl
     )
     if result.returncode != 0:
         raise ManualReviewRequired(f"Falha na conversao PDF: {result.stderr or result.stdout}")
-    pdf_path = target_dir / f"{source.stem}.pdf"
     if not pdf_path.exists():
         raise ManualReviewRequired("Conversao executada, mas PDF nao foi encontrado.")
-    log("info", f"PDF criado: {pdf_path}")
+    log("info", f"PDF criado via LibreOffice: {pdf_path}")
     return str(pdf_path)
 
 

@@ -325,13 +325,22 @@ def workspace_area_loaded(page, expected_area: str) -> bool:
     expected_texts = WORKSPACE_EXPECTED_AREAS.get(expected_area)
     if not expected_texts:
         raise PlaywrightAutomationError(f"Area de Workspace invalida: {expected_area}")
+    
+    # 1. Verifica primeiro se a área de interesse já está visível na tela
+    body = page_text(page).lower()
+    area_present = False
+    if any(text.lower() in body for text in expected_texts):
+        area_present = True
+    elif expected_area == "upload" and upload_area_present(page):
+        area_present = True
+        
+    if area_present:
+        return True
+        
+    # 2. Somente se a área NÃO estiver visível, checamos se está aguardando (loading) ou obsoleta (stale)
     if workspace_page_is_stale(page) or workspace_page_is_loading(page):
         return False
-    body = page_text(page).lower()
-    if any(text.lower() in body for text in expected_texts):
-        return True
-    if expected_area == "upload" and upload_area_present(page):
-        return True
+        
     return False
 
 

@@ -449,24 +449,6 @@ def complete_upload_batch(id: int, data: dict, db: Session = Depends(get_db)):
         )
 
     monitor_task = None
-    if payload.get("start_monitoring_after_upload", True) is not False:
-        monitor_payload = {
-            **payload,
-            "files": canonical_files,
-            "source_upload_task_id": task.id,
-            "source_batch_number": batch_number,
-            "source_batch_folder_path": batch_folder_path,
-        }
-        monitor_payload.pop("completed_batches", None)
-        monitor_task = AgentTask(
-            task_type="monitor_workspace_files_status",
-            status="pending",
-            payload_json=encode_json(monitor_payload),
-            created_by_id=task.created_by_id,
-            max_attempts=task.max_attempts or payload.get("max_retries") or payload.get("max_attempts") or 3,
-        )
-        db.add(monitor_task)
-        db.flush()
 
     completed_entry = {
         "batch_number": batch_number,
@@ -523,6 +505,56 @@ def complete_task(id: int, data: Optional[dict] = None, db: Session = Depends(ge
         update_files_from_result(db, task, data)
     db.commit()
     automation_id = task_automation_id(task)
+
+    # === MONITORAMENTO ÚNICO APÓS O ENVIO DE TODOS OS ARQUIVOS ===
+    if task.task_type == "upload_files_to_workspace":
+        payload = parse_payload(task.payload_json)
+        if payload.get("start_monitoring_after_upload", True) is not False:
+            # Pega todos os arquivos desta tarefa de upload registrados no banco
+            files = db.query(WorkspaceFile).filter(
+                WorkspaceFile.detection_task_id == task.id,
+                WorkspaceFile.is_deleted == False,
+            ).all()
+            if files:
+                canonical_files = []
+                for f in files:
+                    canonical_files.append({
+                        "file_id": f.id,
+                        "file_name": f.file_name,
+                        "path": f.temp_path,
+                        "temp_path": f.temp_path,
+                        "original_path": f.original_path,
+                        "status": f.status,
+                        "playground_status": f.playground_status,
+                    })
+                monitor_payload = {
+                    **payload,
+                    "files": canonical_files,
+                    "source_upload_task_id": task.id,
+                }
+                monitor_payload.pop("completed_batches", None)
+                monitor_task = AgentTask(
+                    task_type="monitor_workspace_files_status",
+                    status="pending",
+                    payload_json=encode_json(monitor_payload),
+                    created_by_id=task.created_by_id,
+                    max_attempts=task.max_attempts or payload.get("max_retries") or payload.get("max_attempts") or 3,
+                )
+                db.add(monitor_task)
+                db.flush()
+                db.commit()
+                create_log(
+                    db,
+                    "info",
+                    "Monitoramento unico enfileirado apos o envio de todos os arquivos.",
+                    "agent_task",
+                    monitor_task.id,
+                    user_id=task.created_by_id,
+                    task_id=monitor_task.id,
+                    automation_id=automation_id,
+                    metadata={"files": [item["file_name"] for item in canonical_files]},
+                )
+
     create_log(db, "info", "Task completed", "agent_task", task.id, user_id=task.created_by_id, task_id=task.id, automation_id=automation_id)
     maybe_finalize_automation(db, task)
     return {"status": "completed"}
