@@ -669,28 +669,11 @@ def log_task(id: int, data: dict, db: Session = Depends(get_db)):
 
 @router.post("/tasks/{id}/folder-monitoring-report")
 def automatic_folder_monitoring_report(id: int, db: Session = Depends(get_db)):
-    task = db.query(AgentTask).filter(AgentTask.id == id, AgentTask.is_deleted == False).first()
-    if not task:
-        raise HTTPException(404)
-    if task.task_type != "upload_files_to_workspace":
-        raise HTTPException(422, "Relatorio automatico disponivel apenas para ciclo de monitoramento de pasta.")
-    payload = task_payload(task)
-    if not (payload.get("folder_path") or payload.get("source_folder_path")):
-        raise HTTPException(422, "Task nao representa varredura local de pasta.")
-    automation_id = task_automation_id(task)
-    automation = db.query(Automation).filter(
-        Automation.id == automation_id,
-        Automation.is_deleted == False,
-        Automation.type == "folder_monitoring",
-    ).first()
-    if not automation:
-        raise HTTPException(422, "Task sem automacao valida de monitoramento de pasta.")
-    return create_automatic_folder_monitoring_report(
-        db,
-        {
-            "source_task_id": task.id,
-            "automation_id": automation.id,
-            "workspace_id": safe_int(payload.get("workspace_id")),
-            "generated_by_id": task.created_by_id,
-        },
-    )
+    return {
+        "report": None,
+        "saved": False,
+        "created": False,
+        "skipped": True,
+        "environment_mode": "operational",
+        "message": "Geração automática de relatórios foi desativada pelo administrador."
+    }

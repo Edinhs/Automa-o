@@ -160,15 +160,7 @@ def staging_report_logger(log, automation_id: int | None):
 
 
 def should_generate_folder_report(payload: dict[str, Any], terminal_result: dict[str, Any] | None) -> bool:
-    if payload.get("files"):
-        return True
-    if str((terminal_result or {}).get("status") or "") in REPORTABLE_TERMINAL_STATUSES:
-        return True
-    scan_stats = (terminal_result or {}).get("scan_stats") or payload.get("scan_stats") or {}
-    return any(
-        int(scan_stats.get(key) or 0) > 0
-        for key in ("inaccessible_dirs_count", "copy_failed_count", "hash_failed_count")
-    )
+    return False
 
 
 def request_automatic_folder_report(session: requests.Session, task_id: int, automation_id: int | None, log) -> None:

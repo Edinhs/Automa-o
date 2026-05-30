@@ -793,3 +793,19 @@ def download_report(id: int, db: Session = Depends(get_db)):
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
+
+
+@router.delete("/{id}")
+def delete_report(id: int, db: Session = Depends(get_db)):
+    report = db.query(ExecutionReport).filter(
+        ExecutionReport.id == id,
+        ExecutionReport.is_deleted == False,
+        ExecutionReport.source_scope == REPORT_SOURCE_SCOPE,
+    ).first()
+    if not report:
+        raise HTTPException(404, detail="Report not found")
+    report.is_deleted = True
+    report.deleted_at = datetime.utcnow()
+    db.commit()
+    create_log(db, "warning", f"Report marked as deleted: {report.name}", "report", report.id)
+    return {"status": "deleted"}

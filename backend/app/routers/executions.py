@@ -482,3 +482,16 @@ def execution_summary(id: int, db: Session = Depends(get_db)):
         "status": execution["status"],
         "summary": execution["summary"],
     }
+
+
+@router.delete("/{id}")
+def delete_execution(id: int, db: Session = Depends(get_db)):
+    task = db.query(AgentTask).filter(AgentTask.id == id, AgentTask.is_deleted == False).first()
+    if not task:
+        raise HTTPException(404, detail="Execution not found")
+    task.is_deleted = True
+    task.deleted_at = datetime.utcnow()
+    db.commit()
+    from app.services.audit import create_log
+    create_log(db, "warning", f"Execution marked as deleted: {task.id}", "agent_task", task.id, task_id=task.id)
+    return {"status": "deleted"}

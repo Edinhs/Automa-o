@@ -349,12 +349,94 @@ def update_file(id: int, data: dict, db: Session = Depends(get_db)):
     f = db.query(WorkspaceFile).filter(WorkspaceFile.id == id, WorkspaceFile.is_deleted == False).first()
     if not f:
         raise HTTPException(404)
-    for key, value in clean_payload(data).items():
+    
+    clean_data = clean_payload(data)
+    status_changed_to_retry = clean_data.get("status") == "pending_retry" and f.status != "pending_retry"
+    
+    for key, value in clean_data.items():
         setattr(f, key, value)
+    
+    if status_changed_to_retry:
+        from app.models.automation import Automation
+        workspace = db.query(Workspace).filter(Workspace.id == f.workspace_id, Workspace.is_deleted == False).first()
+        automation = db.query(Automation).filter(Automation.id == f.automation_id, Automation.is_deleted == False).first() if f.automation_id else None
+        
+        config = {}
+        if automation and automation.config_json:
+            try:
+                config = json.loads(automation.config_json)
+            except:
+                pass
+        
+        user_id = None
+        if config and config.get("playground_user_id"):
+            user_id = int(config["playground_user_id"])
+        if not user_id and workspace and workspace.owner_user_id:
+            user_id = int(workspace.owner_user_id)
+        if not user_id:
+            connected_user = (
+                db.query(User)
+                .filter(
+                    User.is_deleted == False,
+                    User.status == "active",
+                    (User.playground_connected == True) | (User.playground_session_path.isnot(None)),
+                )
+                .order_by(User.id.asc())
+                .first()
+            )
+            if connected_user:
+                user_id = connected_user.id
+        if not user_id:
+            admin_user = (
+                db.query(User)
+                .filter(User.is_deleted == False, User.status == "active", User.role == "admin")
+                .order_by(User.id.asc())
+                .first()
+            )
+            if admin_user:
+                user_id = admin_user.id
+                
+        payload = {
+            "file_id": f.id,
+            "automation_id": f.automation_id,
+            "workspace_id": f.workspace_id,
+            "workspace_name": workspace.name if workspace else "Workspace",
+            "workspace_playground_url": (workspace.playground_url or workspace.add_data_url or None) if workspace else None,
+            "temp_path": f.temp_path or f.original_path,
+            "original_path": f.original_path,
+            "attempts": f.attempts or 0,
+            "max_attempts": f.max_attempts or 3,
+            "temp_folder_path": automation.temp_folder_path if automation else str(runtime_path("TEMP_PATH")),
+            "browser_channel": "chromium",
+            "headless": config.get("playwright_mode") == "headless" if (config and "playwright_mode" in config) else False,
+            "user_id": user_id,
+        }
+        
+        task = AgentTask(
+            task_type="convert_and_retry_file",
+            status="pending",
+            payload_json=json.dumps(payload, ensure_ascii=False),
+            created_by_id=user_id,
+            max_attempts=f.max_attempts or 3,
+        )
+        db.add(task)
+        
     db.commit()
     db.refresh(f)
     create_log(db, "info", f"File updated: {f.file_name}", "workspace_file", f.id, automation_id=f.automation_id, file_id=f.id)
     return file_out(f)
+
+
+@router.delete("/{id}")
+def delete_file(id: int, db: Session = Depends(get_db)):
+    f = db.query(WorkspaceFile).filter(WorkspaceFile.id == id, WorkspaceFile.is_deleted == False).first()
+    if not f:
+        raise HTTPException(404, detail="File not found")
+    f.is_deleted = True
+    f.deleted_at = datetime.utcnow()
+    db.commit()
+    create_log(db, "warning", f"File marked as deleted: {f.file_name}", "workspace_file", f.id, automation_id=f.automation_id, file_id=f.id)
+    return {"status": "deleted"}
 
 
 @router.get("/{id}/logs")
