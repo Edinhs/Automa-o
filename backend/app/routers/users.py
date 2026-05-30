@@ -1,6 +1,7 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.user import DEFAULT_THEME_PREFERENCE, VALID_THEME_PREFERENCES, User
@@ -11,6 +12,9 @@ from app.core.security import get_password_hash
 from datetime import datetime
 
 router = APIRouter()
+
+VALID_ROLES = {"admin", "user", "viewer"}
+VALID_STATUSES = {"active", "inactive", "archived"}
 
 USER_FIELDS = {
     "name",
@@ -63,10 +67,16 @@ def user_payload(data: dict) -> dict:
             clean[key] = None
     if "theme_preference" in clean:
         clean["theme_preference"] = normalize_theme_preference(clean["theme_preference"])
+    if "role" in clean and clean["role"] is not None:
+        if clean["role"] not in VALID_ROLES:
+            raise HTTPException(422, f"role must be one of: {', '.join(sorted(VALID_ROLES))}")
+    if "status" in clean and clean["status"] is not None:
+        if clean["status"] not in VALID_STATUSES:
+            raise HTTPException(422, f"status must be one of: {', '.join(sorted(VALID_STATUSES))}")
     return clean
 
 @router.get("")
-def list_users(db: Session = Depends(get_db)):
+def list_users(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
     users = db.query(User).filter(User.is_deleted == False).all()
     return [public_user(u) for u in users]
 
@@ -78,13 +88,17 @@ def create_user(user_data: dict, db: Session = Depends(get_db), _admin: User = D
     clean = user_payload(user_data)
     new_user = User(**clean)
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "A user with this email or network_id already exists")
     db.refresh(new_user)
     create_log(db, "info", f"User created: {new_user.name}", "user", new_user.id)
     return public_user(new_user)
 
 @router.get("/{id}")
-def get_user(id: int, db: Session = Depends(get_db)):
+def get_user(id: int, db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
     u = db.query(User).filter(User.id == id, User.is_deleted == False).first()
     if not u: raise HTTPException(404)
     return public_user(u)
@@ -98,7 +112,11 @@ def update_user(id: int, user_data: dict, db: Session = Depends(get_db), _admin:
         user_data["password_hash"] = get_password_hash(password)
     for k, v in user_payload(user_data).items():
         setattr(u, k, v)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "A user with this email or network_id already exists")
     db.refresh(u)
     return public_user(u)
 
@@ -178,4 +196,4 @@ def update_playground_session(
     db.commit()
     db.refresh(u)
     create_log(db, "info", "Playground session updated", "user", u.id, user_id=u.id)
-    return u
+    return public_user(u)

@@ -1,19 +1,24 @@
+import re
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import BACKEND_DIR, resolve_backend_path, runtime_path, settings
 from app.core.security import create_access_token, verify_password
 from app.db.session import get_db
-from app.models.user import DEFAULT_THEME_PREFERENCE, VALID_THEME_PREFERENCES, User
+from app.models.user import User
 from app.routers.deps import get_current_user
+from app.routers.users import normalize_theme_preference, user_theme_preference
 from app.schemas.user import LoginReq, Token
 from app.services.audit import create_log
 
 router = APIRouter()
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 ALLOWED_PROFILE_PHOTO_TYPES = {
     "image/png": ".png",
@@ -37,18 +42,6 @@ def user_response(user: User) -> dict:
         "created_at": user.created_at,
         "last_login_at": user.last_login_at,
     }
-
-
-def user_theme_preference(user: User) -> str:
-    value = str(getattr(user, "theme_preference", "") or "").strip().lower()
-    return value if value in VALID_THEME_PREFERENCES else DEFAULT_THEME_PREFERENCE
-
-
-def normalize_theme_preference(value: str) -> str:
-    text = str(value or "").strip().lower()
-    if text not in VALID_THEME_PREFERENCES:
-        raise HTTPException(status_code=422, detail="theme_preference must be 'light' or 'dark'")
-    return text
 
 
 def profile_photo_dir() -> Path:
@@ -102,6 +95,9 @@ def login(req: LoginReq, db: Session = Depends(get_db)):
     if not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
+    user.last_login_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
     access_token = create_access_token(data={"sub": user.network_id})
     return {"access_token": access_token, "token_type": "bearer", "user": user_response(user)}
 
@@ -113,12 +109,21 @@ def get_me(current_user: User = Depends(get_current_user)):
 
 @router.put("/me")
 def update_me(data: dict, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    for field in ["name", "email", "playground_session_path"]:
+    for field in ["name", "playground_session_path"]:
         if field in data:
             setattr(current_user, field, data[field])
+    if "email" in data:
+        email_val = (data["email"] or "").strip()
+        if email_val and not _EMAIL_RE.match(email_val):
+            raise HTTPException(status_code=422, detail="Invalid email format")
+        setattr(current_user, "email", email_val or None)
     if "theme_preference" in data:
         current_user.theme_preference = normalize_theme_preference(data["theme_preference"])
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "A user with this email already exists")
     db.refresh(current_user)
     return {"user": user_response(current_user)}
 

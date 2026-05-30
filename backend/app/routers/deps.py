@@ -12,8 +12,13 @@ from app.models.user import User
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
-LOCAL_USER_NETWORK_ID = "LOCAL_OPERATOR"
-LOCAL_USER_EMAIL = "local.operator@stellantis.local"
+LOCAL_USER_NETWORK_ID = "TA25413"
+LOCAL_USER_EMAIL = "TA25413@stellantis.com"
+LOCAL_USER_NAME = "Ederson Siqueira dos Santos"
+# Hash bcrypt para "98Edinho" — gerado com bcrypt.hashpw, verificado com checkpw=True.
+# Nunca armazene a senha em texto puro. Para gerar novo hash:
+#   python -c "import bcrypt; print(bcrypt.hashpw(b'98Edinho', bcrypt.gensalt()).decode())"
+LOCAL_USER_PASSWORD_HASH = "$2b$12$N0PN52pCQOdXNK0x/uB/Ce7H9V00gqeyC5iZRxsqcNhM.FsFIH56i"
 
 
 def get_or_create_local_user(db: Session) -> User:
@@ -23,23 +28,32 @@ def get_or_create_local_user(db: Session) -> User:
         User.role == "admin",
     ).order_by(User.id.asc()).first()
     if user:
+        # Garante que o operador local tem os dados canônicos atualizados
+        if user.network_id != LOCAL_USER_NETWORK_ID or not user.password_hash:
+            user.name = LOCAL_USER_NAME
+            user.email = LOCAL_USER_EMAIL
+            user.network_id = LOCAL_USER_NETWORK_ID
+            user.password_hash = LOCAL_USER_PASSWORD_HASH
+            db.commit()
+            db.refresh(user)
         return user
 
     user = db.query(User).filter(User.network_id == LOCAL_USER_NETWORK_ID).first()
     if user:
-        user.name = user.name or "Operador Local Automation HUB"
-        user.email = user.email or LOCAL_USER_EMAIL
+        user.name = LOCAL_USER_NAME
+        user.email = LOCAL_USER_EMAIL
         user.role = "admin"
         user.status = "active"
         user.is_deleted = False
+        user.password_hash = LOCAL_USER_PASSWORD_HASH
     else:
         user = User(
-            name="Operador Local Automation HUB",
+            name=LOCAL_USER_NAME,
             email=LOCAL_USER_EMAIL,
             network_id=LOCAL_USER_NETWORK_ID,
             role="admin",
             status="active",
-            password_hash="",
+            password_hash=LOCAL_USER_PASSWORD_HASH,
         )
         db.add(user)
     db.commit()
