@@ -39,12 +39,19 @@ Error generating stack: `+c.message+`
 function yX_ErrorsPie({ successful, pending }) {
     const { t } = Ue();
     const isEn = localStorage.getItem("hub_settings")?.includes("en-US") || localStorage.getItem("hub_settings")?.includes("en");
-    const data = [
-        { name: isEn ? "Resolved" : "Resolvidos", value: successful, fill: "#10b981" },
-        { name: isEn ? "Pending" : "Pendentes", value: pending, fill: "#ef4444" }
-    ];
     const total = successful + pending;
     const hasData = total > 0;
+    
+    const r = 50;
+    const circ = 2 * Math.PI * r;
+    const pSucc = hasData ? (successful / total) : 0;
+    const pPend = hasData ? (pending / total) : 0;
+    
+    const strokeSucc = circ * pSucc;
+    const strokePend = circ * pPend;
+    
+    const offsetSucc = 0;
+    const offsetPend = -strokeSucc;
     
     return h.jsxs(Ie, {
         className: "w-full h-full flex flex-col justify-between p-4 rounded-xl border border-zinc-200 bg-white dark:border-white/10 dark:bg-zinc-950/80 shadow-sm",
@@ -55,25 +62,79 @@ function yX_ErrorsPie({ successful, pending }) {
                     h.jsx("p", { className: "mt-1 text-sm text-zinc-500", children: isEn ? "Manual intervention effectiveness" : "Indicador de eficácia das intervenções manuais." })
                 ]
             }),
-            hasData ? h.jsx("div", {
-                className: "h-72 mt-4 relative flex items-center justify-center",
-                children: h.jsx(u0, {
-                    children: ({ width: X, height: le }) => h.jsx(EY, {
-                        width: X,
-                        height: le,
-                        children: h.jsx(zC, {
-                            data: data,
-                            cx: "50%",
-                            cy: "50%",
-                            innerRadius: 55,
-                            outerRadius: 80,
-                            paddingAngle: 4,
-                            dataKey: "value",
-                            label: uW,
-                            children: data.map(entry => h.jsx(Ji, { fill: entry.fill }, entry.name))
-                        })
+            hasData ? h.jsxs("div", {
+                className: "mt-4 flex flex-col items-center justify-center gap-4 sm:flex-row sm:gap-8 min-h-[220px] w-full",
+                children: [
+                    h.jsxs("div", {
+                        className: "relative w-44 h-44 flex items-center justify-center",
+                        children: [
+                            h.jsxs("svg", {
+                                className: "w-full h-full transform -rotate-90 select-none drop-shadow-sm",
+                                viewBox: "0 0 120 120",
+                                children: [
+                                    strokeSucc > 0 ? h.jsx("circle", {
+                                        cx: "60",
+                                        cy: "60",
+                                        r: String(r),
+                                        fill: "transparent",
+                                        stroke: "#10b981",
+                                        strokeWidth: "14",
+                                        strokeDasharray: `${strokeSucc} ${circ}`,
+                                        strokeDashoffset: String(offsetSucc),
+                                        className: "transition-all duration-500 hover:stroke-[16px] cursor-pointer"
+                                    }) : null,
+                                    strokePend > 0 ? h.jsx("circle", {
+                                        cx: "60",
+                                        cy: "60",
+                                        r: String(r),
+                                        fill: "transparent",
+                                        stroke: "#ef4444",
+                                        strokeWidth: "14",
+                                        strokeDasharray: `${strokePend} ${circ}`,
+                                        strokeDashoffset: String(offsetPend),
+                                        className: "transition-all duration-500 hover:stroke-[16px] cursor-pointer"
+                                    }) : null
+                                ]
+                            }),
+                            h.jsxs("div", {
+                                className: "absolute flex flex-col items-center justify-center text-center",
+                                children: [
+                                    h.jsx("span", { className: "text-2xl font-extrabold text-zinc-900 dark:text-white", children: `${Math.round(pSucc * 100)}%` }),
+                                    h.jsx("span", { className: "text-[10px] font-semibold tracking-wider text-zinc-400 uppercase", children: isEn ? "Resolved" : "Eficácia" })
+                                ]
+                            })
+                        ]
+                    }),
+                    h.jsxs("div", {
+                        className: "flex flex-col gap-2.5",
+                        children: [
+                            h.jsxs("div", {
+                                className: "flex items-center gap-2",
+                                children: [
+                                    h.jsx("span", { className: "h-3 w-3 rounded-full bg-emerald-500" }),
+                                    h.jsxs("div", {
+                                        children: [
+                                            h.jsxs("p", { className: "text-xs font-bold text-zinc-700 dark:text-zinc-300", children: [isEn ? "Resolved" : "Resolvidos", ": ", successful] }),
+                                            h.jsxs("p", { className: "text-[10px] text-zinc-400", children: [Math.round(pSucc * 100), "%"] })
+                                        ]
+                                    })
+                                ]
+                            }),
+                            h.jsxs("div", {
+                                className: "flex items-center gap-2",
+                                children: [
+                                    h.jsx("span", { className: "h-3 w-3 rounded-full bg-red-500" }),
+                                    h.jsxs("div", {
+                                        children: [
+                                            h.jsxs("p", { className: "text-xs font-bold text-zinc-700 dark:text-zinc-300", children: [isEn ? "Pending" : "Pendentes", ": ", pending] }),
+                                            h.jsxs("p", { className: "text-[10px] text-zinc-400", children: [Math.round(pPend * 100), "%"] })
+                                        ]
+                                    })
+                                ]
+                            })
+                        ]
                     })
-                })
+                ]
             }) : h.jsxs("div", {
                 className: "flex flex-col items-center justify-center py-16 text-center h-full min-h-[220px]",
                 children: [
@@ -257,7 +318,7 @@ function renderMarkdown(md) {
 }
 
 function DP(){
-    const[e,t]=x.useState(eX("Semana")),[n,r]=x.useState("Semana"),[l,u]=x.useState(!1),[s,d]=x.useState(0),[f,m]=x.useState(null),[g,p]=x.useState({executions:[],files:[]}),[b,w]=x.useState(!1),[S,A]=x.useState(""),{t:E}=Ue(),{user:O}=is(),{automations:k,workspaces:_,loading:C,error:P,refreshVersion:T=0}=An(),z=g.executions,I=g.files,L=el(new Date),$=XY(e,n,I,z),B=f||$[$.length-1]||{uploads:0,updated:0,errors:0,label:"-"},U=ZY({automations:k,workspaces:_,files:I,executions:z,todayKey:L}),oe=QY(U,$),ne=[{name:"Sucesso",value:U.successfulFiles},{name:"Erro",value:U.errorFiles}],ue=ne.reduce((X,le)=>X+le.value,0),H=ue>0,Z=s0(U.successfulFiles,ue),ie=s0(U.errorFiles,ue),ce=JY(U,I),de=eW(U);
+    const[e,t]=x.useState(C2("Semana")),[n,r]=x.useState("Semana"),[l,u]=x.useState(!1),[s,d]=x.useState(0),[f,m]=x.useState(null),[g,p]=x.useState({executions:[],files:[]}),[b,w]=x.useState(!1),[S,A]=x.useState(""),{t:E}=Ue(),{user:O}=is(),{automations:k,workspaces:_,loading:C,error:P,refreshVersion:T=0}=An(),z=g.executions,I=g.files,L=el(new Date),$=XY(e,n,I,z),B=f||$[$.length-1]||{uploads:0,updated:0,errors:0,label:"-"},U=ZY({automations:k,workspaces:_,files:I,executions:z,todayKey:L}),oe=QY(U,$),ne=[{name:"Sucesso",value:U.successfulFiles},{name:"Erro",value:U.errorFiles}],ue=ne.reduce((X,le)=>X+le.value,0),H=ue>0,Z=s0(U.successfulFiles,ue),ie=s0(U.errorFiles,ue),ce=JY(U,I),de=eW(U);
 
     const [isEditing, setIsEditing] = x.useState(false);
     const [layout, setLayout] = x.useState(() => {
@@ -287,7 +348,7 @@ function DP(){
     x.useEffect(()=>{m(null)},[e.start,e.end,n]);
     x.useEffect(()=>{s>ne.length-1&&d(0)},[s,ne.length]);
 
-    function M(X){r(X),t(eX(X))}
+    function M(X){r(X),t(C2(X))}
 
     async function Y(){const X=document.getElementById("home-report");if(X){u(!0);try{const[{default:le},{jsPDF:fe}]=await Promise.all([PS(()=>import("./html2canvas.esm-DXEQVQnt.js"),[]),PS(()=>import("./jspdf.es.min-BPSDZ1xb.js").then(Se=>Se.j),[])]),ye=await le(X,{backgroundColor:"#f4f6f8",scale:2,useCORS:!0}),we=ye.toDataURL("image/png"),ke=new fe("p","mm","a4"),J=ke.internal.pageSize.getWidth(),re=ke.internal.pageSize.getHeight(),he=ye.height*J/ye.width;let ae=he,ut=0;for(ke.addImage(we,"PNG",0,ut,J,he),ae-=re;ae>0;)ut-=re,ke.addPage(),ke.addImage(we,"PNG",0,ut,J,he),ae-=re;ke.save("stellantis_automation_hub_home.pdf")}finally{u(!1)}}}
 
