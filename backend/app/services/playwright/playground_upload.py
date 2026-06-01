@@ -366,9 +366,9 @@ def _request_content_type(request) -> str:
 def _request_is_file_upload(request) -> bool:
     """True quando a requisicao realmente carrega o conteudo de um arquivo (multipart/binario).
 
-    Distingue o upload REAL das chamadas de fundo (JSON/urlencoded) que tambem batem no
-    _UPLOAD_URL_PATTERN — sem essa checagem, um POST de polling para `/.../files` confirmava
-    o envio de forma precoce, antes mesmo do verde "Uploading Files" surgir.
+    E o UNICO discriminador da confirmacao por rede: distingue o upload REAL das chamadas de
+    fundo (JSON/urlencoded) que tambem disparam apos o clique. Sem essa checagem, um POST de
+    polling para `/.../files` confirmava o envio de forma precoce, antes do envio real ocorrer.
     """
     content_type = _request_content_type(request)
     if not content_type:
@@ -412,16 +412,19 @@ class _NetworkCapture:
                 "status": str(status),
                 "content_type": content_type,
                 "file_upload": str(is_file_upload),
+                # Diagnostico apenas: a URL casava o antigo padrao de upload? (nao gateia a confirmacao)
+                "url_looks_like_upload": str(_url_looks_like_upload(url)),
             }
             with self._lock:
                 self._requests.append(entry)
-                # So confirma o envio quando a resposta 2xx for de uma URL de upload E a
-                # requisicao realmente carregar o conteudo de um arquivo (multipart/binario).
-                # Chamadas de fundo (JSON) ficam de fora -> o verde "Uploading Files" decide.
+                # So confirma o envio quando a resposta 2xx vier de uma requisicao que
+                # realmente carrega o conteudo de um arquivo (multipart/binario), em QUALQUER URL.
+                # O content-type de arquivo e o discriminador: chamadas de fundo (JSON/urlencoded)
+                # ficam de fora -> nao confirmam envio. Nao dependemos mais da URL casar um padrao,
+                # pois o endpoint real do Playground nem sempre contem /upload|file|... no caminho.
                 if (
                     status
                     and 200 <= int(status) < 300
-                    and _url_looks_like_upload(url)
                     and is_file_upload
                     and not self._confirmed
                 ):
@@ -474,11 +477,12 @@ def wait_for_batch_sent(
 
     Confirma o envio por QUALQUER um destes sinais reais (os arquivos ja foram
     verificados como anexados aos inputs em choose_files, sinal 1):
-      A. Rede: uma requisicao POST/PUT/PATCH para uma URL de upload retornou 2xx
-         (capturada pelo _NetworkCapture iniciado ANTES do clique). Sinal mais forte.
+      A. Rede: uma requisicao POST/PUT/PATCH que carrega content-type DE ARQUIVO
+         (multipart/binario) retornou 2xx, em QUALQUER URL (capturada pelo
+         _NetworkCapture iniciado ANTES do clique). Sinal mais forte.
       B. Verde "Uploading Files" que SURGE apos o clique (nao estava no snapshot
-         pre-clique). Cobre o caso de a URL de upload nao casar o padrao de rede,
-         sem reintroduzir falso positivo (verde pre-existente NAO conta).
+         pre-clique). Fallback para quando o upload nao gera um sinal de rede
+         capturavel, sem reintroduzir falso positivo (verde pre-existente NAO conta).
 
     NUNCA confirma por texto de "concluido" isolado (era a causa do retorno precoce
     sem envio); verde PRE-EXISTENTE tambem nao conta.
@@ -573,6 +577,7 @@ def wait_for_batch_sent(
             "network_capture_active": network_capture is not None,
             "network_confirmed": network_confirmed,
             "saw_active_text": saw_active_text,
+            "pre_active": pre_active,
             "attached_count_at_timeout": attached_count,
             "post_put_requests_captured": captured_requests,
             "body_sample": body_final[:600],
