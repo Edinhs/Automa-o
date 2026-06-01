@@ -324,7 +324,12 @@ function DP(){
     const [layout, setLayout] = x.useState(() => {
         const saved = localStorage.getItem("hub_dashboard_layout");
         if (saved) {
-            try { return JSON.parse(saved); } catch(err) {}
+            try {
+                const parsed = JSON.parse(saved);
+                if (parsed && parsed.some(item => item.label && item.label.includes("Pizza"))) {
+                    return parsed;
+                }
+            } catch(err) {}
         }
         return [
             { label: "Automações cadastradas", colSpan: 1 },
