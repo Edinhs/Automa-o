@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -25,6 +26,13 @@ from app.services.playwright.selectors import (
     UPLOAD_COMPLETE_TEXTS,
     UPLOAD_ERROR_TEXTS,
     UPLOAD_FILES_TEXTS,
+)
+
+# Padrao para reconhecer URLs de upload real nas requisicoes de rede capturadas.
+# Cobre: /upload, /file(s), /document(s), /ingest, /s3, /blob, /object, /chunk, /import, /attach.
+_UPLOAD_URL_PATTERN = re.compile(
+    r"/(upload|file|files|document|documents|ingest|s3|blob|object|chunk|import|attach)",
+    re.IGNORECASE,
 )
 
 
@@ -110,7 +118,27 @@ def click_upload_files(page, log: Callable) -> None:
     log("info", "Upload Files clicado.")
 
 
+def _count_files_in_inputs(page) -> int:
+    """Conta via JS quantos arquivos estao realmente presos aos inputs[type=file] da pagina."""
+    try:
+        return int(
+            page.evaluate(
+                "Array.from(document.querySelectorAll('input[type=file]'))"
+                ".reduce((n, el) => n + (el.files ? el.files.length : 0), 0)"
+            )
+        )
+    except Exception:
+        return -1  # -1 indica que nao foi possivel avaliar (pagina em transicao)
+
+
 def choose_files(page, paths: list[str], log: Callable) -> None:
+    """Abre o file-chooser (ou usa o input direto) e verifica que os arquivos foram
+    realmente anexados aos inputs da pagina antes de retornar.
+
+    Levanta UploadFailed se, apos a selecao, nenhum arquivo for detectado nos inputs
+    via avaliacao JS — isso evita um clique de Upload "no escuro" sem payload real.
+    """
+    expected_count = len(paths)
     try:
         with page.expect_file_chooser(timeout=5000) as file_chooser_info:
             clicked = click_first(
@@ -121,15 +149,47 @@ def choose_files(page, paths: list[str], log: Callable) -> None:
             if not clicked:
                 raise UploadFailed("Choose Files nao encontrado.")
         file_chooser_info.value.set_files(paths)
-        log("info", "Arquivos selecionados.")
-        return
+        log("info", "Arquivos selecionados via file chooser.")
     except Exception:
         file_input = page.locator('input[type="file"]').first
         if file_input.count():
             file_input.set_input_files(paths, timeout=5000)
-            log("info", "Arquivos selecionados via input file.")
-            return
-        raise
+            log("info", "Arquivos selecionados via input file direto.")
+        else:
+            raise
+
+    # --- Verificacao real de anexo (sinal 1) ---
+    # Aguarda ate 3 s para que o browser registre os arquivos no FileList do input.
+    attached_count = -1
+    for _attempt in range(6):
+        attached_count = _count_files_in_inputs(page)
+        if attached_count >= expected_count:
+            break
+        time.sleep(0.5)
+
+    log(
+        "info",
+        "Verificacao de anexo: arquivos detectados nos inputs.",
+        metadata={
+            "expected": expected_count,
+            "detected": attached_count,
+            "paths": paths,
+        },
+    )
+
+    if attached_count == 0:
+        raise UploadFailed(
+            f"Arquivos nao anexados ao input apos selecao "
+            f"(0 de {expected_count} detectados via JS). "
+            "O Playground pode ter ignorado o file chooser — nenhum dado seria enviado."
+        )
+
+    if 0 < attached_count < expected_count:
+        log(
+            "warning",
+            "Anexo parcial detectado; prosseguindo (Playground pode usar multiplos inputs).",
+            metadata={"expected": expected_count, "detected": attached_count},
+        )
 
 
 def wait_for_selected_files(page, batch: list[dict[str, Any]], log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
@@ -264,75 +324,208 @@ def _body_has_complete(body_lower: str) -> bool:
     return any(text.lower() in body_lower for text in UPLOAD_COMPLETE_TEXTS)
 
 
+def _url_looks_like_upload(url: str) -> bool:
+    """Heuristica: a URL parece ser um endpoint de upload de arquivo."""
+    return bool(_UPLOAD_URL_PATTERN.search(url))
+
+
+class _NetworkCapture:
+    """Registra requisicoes POST/PUT disparadas apos o clique de upload.
+
+    Uso:
+        capture = _NetworkCapture(page, log)
+        capture.start()
+        # ... clique de upload ...
+        confirmed, detail = capture.wait_for_upload_response(timeout_seconds)
+        capture.stop()
+    """
+
+    def __init__(self, page, log: Callable) -> None:
+        self._page = page
+        self._log = log
+        self._requests: list[dict[str, str]] = []   # {method, url, status}
+        self._confirmed = False
+        self._confirmed_url = ""
+        self._lock = __import__("threading").Lock()
+        self._on_response_handler = None
+
+    def _on_response(self, response) -> None:
+        try:
+            method = (response.request.method or "").upper()
+            url = response.url or ""
+            status = response.status
+            if method not in ("POST", "PUT", "PATCH"):
+                return
+            entry = {"method": method, "url": url, "status": str(status)}
+            with self._lock:
+                self._requests.append(entry)
+                if status and 200 <= int(status) < 300 and _url_looks_like_upload(url):
+                    if not self._confirmed:
+                        self._confirmed = True
+                        self._confirmed_url = url
+        except Exception:
+            pass
+
+    def start(self) -> None:
+        self._on_response_handler = self._on_response
+        self._page.on("response", self._on_response_handler)
+
+    def stop(self) -> None:
+        try:
+            if self._on_response_handler:
+                self._page.remove_listener("response", self._on_response_handler)
+        except Exception:
+            pass
+
+    def wait_for_upload_response(self, timeout_seconds: float) -> tuple[bool, str]:
+        """Aguarda ate timeout_seconds por uma resposta 2xx em URL de upload.
+
+        Retorna (confirmado, url_confirmada).
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._confirmed:
+                    return True, self._confirmed_url
+            time.sleep(0.3)
+        with self._lock:
+            return self._confirmed, self._confirmed_url
+
+    def all_requests(self) -> list[dict[str, str]]:
+        with self._lock:
+            return list(self._requests)
+
+
 def wait_for_batch_sent(
     page,
     log: Callable,
     should_continue: Callable[[], bool] | None = None,
     *,
     pre_click_body: str = "",
+    network_capture: "_NetworkCapture | None" = None,
+    task_id: int = 0,
+    batch: "list[dict[str, Any]] | None" = None,
 ) -> None:
-    """Aguarda o lote iniciar o envio (verde "Uploading Files") ou dar erro (vermelho).
+    """Aguarda confirmacao REAL de que o lote foi enviado ao servidor.
 
-    Levanta UploadFailed("uploading error") ao ver o vermelho; levanta UploadFailed
-    generico se nada acontecer dentro de BATCH_SENT_TIMEOUT_SECONDS.
+    Confirma o envio por QUALQUER um destes sinais reais (os arquivos ja foram
+    verificados como anexados aos inputs em choose_files, sinal 1):
+      A. Rede: uma requisicao POST/PUT/PATCH para uma URL de upload retornou 2xx
+         (capturada pelo _NetworkCapture iniciado ANTES do clique). Sinal mais forte.
+      B. Verde "Uploading Files" que SURGE apos o clique (nao estava no snapshot
+         pre-clique). Cobre o caso de a URL de upload nao casar o padrao de rede,
+         sem reintroduzir falso positivo (verde pre-existente NAO conta).
 
-    pre_click_body (opcional): snapshot do body ANTES do clique de upload, em lower-case.
-    Usado para eliminar o falso positivo em que UPLOAD_COMPLETE_TEXTS ja estava presente
-    na tela de sessoes anteriores antes de este lote comecar a subir.
+    NUNCA confirma por texto de "concluido" isolado (era a causa do retorno precoce
+    sem envio); verde PRE-EXISTENTE tambem nao conta.
 
-    Regra de conclusao:
-      - Prioridade 1: verde UPLOAD_ACTIVE_TEXTS aparece  -> confirmado, retorna.
-      - Prioridade 2: UPLOAD_COMPLETE_TEXTS aparece SOMENTE se o texto NAO estava no
-        snapshot pre-clique (i.e. surgiu DEPOIS do clique desta sessao).  Isso evita que
-        labels de arquivos ja enviados ("Uploaded", "Upload date", "Concluido") disparem
-        o retorno precoce.
-      - Nunca retorna por UPLOAD_COMPLETE_TEXTS isolado sem transicao observada.
+    Levanta UploadFailed("uploading error") ao detectar o vermelho.
+    Levanta UploadFailed com diagnostico completo se nenhum sinal real chegar dentro
+    de BATCH_SENT_TIMEOUT_SECONDS.
     """
     deadline = time.monotonic() + BATCH_SENT_TIMEOUT_SECONDS
-    # Textos de "complete" pre-existentes no snapshot (antes do clique).
+
+    # Textos de conclusao pre-existentes (ignora como sinal deste lote).
     pre_complete_tokens = {text.lower() for text in UPLOAD_COMPLETE_TEXTS if text.lower() in pre_click_body}
     if pre_complete_tokens:
         log(
             "info",
-            "Snapshot pre-clique contem textos de conclusao; ignorando-os como indicador de envio deste lote.",
+            "Snapshot pre-clique contem textos de conclusao; nao contam como sinal deste lote.",
             metadata={"pre_complete_tokens": sorted(pre_complete_tokens)},
         )
+
+    # Verde "Uploading Files" ja presente ANTES do clique nao conta como sinal deste lote;
+    # so um verde que SURGE depois do clique confirma o envio (arquivos ja anexados, sinal 1).
+    pre_active = any(text.lower() in pre_click_body for text in UPLOAD_ACTIVE_TEXTS)
+
+    saw_active_text = False
+    network_confirmed = False
+    confirmed_url = ""
 
     while time.monotonic() < deadline:
         check_continue(should_continue)
         body = page_text(page).lower()
 
-        # Erro vermelho tem prioridade maxima.
+        # Erro vermelho: prioridade maxima, independe de sinal de rede.
         if any(text.lower() in body for text in UPLOAD_ERROR_TEXTS):
             raise UploadFailed("uploading error")
 
-        # Verde "Uploading Files": evidencia positiva de que este lote iniciou o envio.
-        if _body_has_active(body):
-            log("info", "Uploading Files (verde) detectado; lote enviado.")
-            return
+        # Verificar sinal de rede (sinal primario 1).
+        if network_capture and not network_confirmed:
+            with network_capture._lock:
+                network_confirmed = network_capture._confirmed
+                confirmed_url = network_capture._confirmed_url
 
-        # "Upload complete" / "Uploaded" etc. so vale como sinal de conclusao se surgiu
-        # APOS o clique, ou seja, se NAO estava no snapshot pre-clique.
-        # Avaliamos token a token: um novo token de conclusao que nao estava antes indica
-        # que o Playground processou o lote e exibiu o resultado.
-        new_complete_tokens = {
-            text.lower()
-            for text in UPLOAD_COMPLETE_TEXTS
-            if text.lower() in body and text.lower() not in pre_complete_tokens
-        }
-        if new_complete_tokens:
+        # Verde "Uploading Files": registra deteccao; confirma so se SURGIU apos o clique.
+        active_now = _body_has_active(body)
+        if active_now and not saw_active_text:
+            log("info", "Uploading Files (verde) detectado na tela.")
+            saw_active_text = True
+
+        # CONFIRMACAO A: rede (POST/PUT/PATCH 2xx em endpoint de upload). Sinal mais forte.
+        if network_confirmed:
             log(
                 "info",
-                "Upload concluido diretamente (novo texto de conclusao detectado apos o clique).",
-                metadata={"new_complete_tokens": sorted(new_complete_tokens)},
+                "Upload confirmado por sinal de rede (POST/PUT 2xx).",
+                metadata={"confirmed_url": confirmed_url, "text_active": saw_active_text},
             )
             return
 
+        # CONFIRMACAO B: verde "Uploading Files" que SURGIU apos o clique (nao estava no
+        # snapshot pre-clique). Com os arquivos ja anexados (sinal 1), e envio real; cobre
+        # o caso de a URL de upload nao casar o padrao de rede, sem falso positivo.
+        if active_now and not pre_active:
+            log("info", "Uploading Files (verde) surgiu apos o clique; envio confirmado.")
+            return
+
+        # Sem captura de rede (isolamento 1-a-1): aceita novo token de conclusao pos-clique.
+        if network_capture is None:
+            new_complete_tokens = {
+                text.lower()
+                for text in UPLOAD_COMPLETE_TEXTS
+                if text.lower() in body and text.lower() not in pre_complete_tokens
+            }
+            if new_complete_tokens:
+                log(
+                    "info",
+                    "Upload concluido diretamente (novo texto de conclusao, sem captura de rede).",
+                    metadata={"new_complete_tokens": sorted(new_complete_tokens)},
+                )
+                return
+
         time.sleep(0.4)
+
+    # --- Timeout: nenhum sinal real confirmou o envio ---
+    # Diagnostico completo antes de levantar.
+    body_final = page_text(page)
+    attached_count = _count_files_in_inputs(page)
+    captured_requests = network_capture.all_requests() if network_capture else []
+
+    log(
+        "error",
+        "Upload NAO confirmado no tempo limite: nenhum sinal real de envio detectado.",
+        metadata={
+            "timeout_seconds": BATCH_SENT_TIMEOUT_SECONDS,
+            "network_capture_active": network_capture is not None,
+            "network_confirmed": network_confirmed,
+            "saw_active_text": saw_active_text,
+            "attached_count_at_timeout": attached_count,
+            "post_put_requests_captured": captured_requests,
+            "body_sample": body_final[:600],
+            "batch_files": [i.get("file_name") for i in (batch or [])],
+        },
+    )
+    safe_error_screenshot(page, task_id, log)
 
     if body_has_upload_error(page):
         raise UploadFailed("uploading error")
-    raise UploadFailed("Lote nao iniciou o envio no tempo esperado (30s).")
+    raise UploadFailed(
+        f"Lote nao confirmado como enviado em {BATCH_SENT_TIMEOUT_SECONDS}s: "
+        f"rede={'confirmada' if network_confirmed else 'sem resposta 2xx'}, "
+        f"texto_verde={'sim' if saw_active_text else 'nao'}, "
+        f"arquivos_no_input={attached_count}. "
+        "Veja logs 'post_put_requests_captured' e screenshot para diagnostico."
+    )
 
 
 def watch_for_error_window(page, seconds: int, should_continue: Callable[[], bool] | None = None) -> bool:
@@ -654,18 +847,21 @@ def upload_batch(
     should_continue: Callable[[], bool] | None = None,
     *,
     is_last_batch: bool = False,
+    task_id: int = 0,
 ) -> list[dict[str, Any]]:
     """Envia um lote (pasta) na tela de upload ja aberta.
 
-    Fluxo: garante a area de Choose Files aberta (sem recarregar), seleciona todos os
-    arquivos do lote, aguarda carregarem e clica no Upload Files final (azul). Considera o
-    lote ENVIADO ao surgir o verde "Uploading Files" e, a partir dai, segue direto para o
-    proximo lote. Se surgir o vermelho "Upload Error", levanta UploadFailed("uploading error")
-    para o chamador isolar o arquivo corrompido.
+    Fluxo: garante a area de Choose Files aberta (sem recarregar), verifica que os
+    arquivos foram realmente anexados aos inputs (sinal 1), registra captura de rede
+    ANTES do clique (sinal 2), clica no Upload Files final e aguarda confirmacao real
+    de envio (requisicao POST/PUT 2xx para URL de upload).
 
-    No ultimo lote (is_last_batch=True), NAO espera conclusao: assim que o verde "Uploading
-    Files" aparece, retorna e o navegador fecha (decisao do usuario). O monitoramento unico
-    posterior detecta e trata os arquivos nao-Ready (deletar + PDF + reenviar).
+    Nunca declara "enviado" sem pelo menos um sinal real (rede OU verde de texto quando
+    a captura de rede nao esta disponivel). Se nenhum sinal chegar, levanta UploadFailed
+    com diagnostico completo (screenshot + contagem de inputs + requisicoes capturadas).
+
+    No ultimo lote (is_last_batch=True), fecha o Chromium logo apos a confirmacao sem
+    aguardar conclusao total (decisao registrada do usuario).
     """
     paths = [str(Path(item["path"]).resolve()) for item in batch]
     missing = [path for path in paths if not Path(path).exists()]
@@ -674,32 +870,41 @@ def upload_batch(
     check_continue(should_continue)
     ensure_upload_area_open(page, log)
     check_continue(should_continue)
+    # choose_files ja verifica a contagem real de arquivos nos inputs via JS (sinal 1).
     choose_files(page, paths, log)
     check_continue(should_continue)
     wait_for_selected_files(page, batch, log, should_continue=should_continue)
 
-    # Captura o estado do body ANTES do clique de upload para eliminar falsos positivos:
-    # textos de "Upload complete"/"Uploaded" ja presentes na tela (arquivos de sessoes
-    # anteriores, coluna "Upload date", etc.) nao devem ser contados como evidencia de
-    # que ESTE lote iniciou o envio.
+    # Snapshot do body ANTES do clique: textos de conclusao pre-existentes nao contam
+    # como evidencia de que ESTE lote iniciou o envio.
     pre_click_body = page_text(page).lower()
 
-    click_final_upload_with_recovery(page, log, should_continue=should_continue)
+    # Inicia captura de rede ANTES do clique para registrar todas as requisicoes
+    # POST/PUT disparadas em consequencia do botao Upload Files (sinal 2).
+    capture = _NetworkCapture(page, log)
+    capture.start()
+    try:
+        click_final_upload_with_recovery(page, log, should_continue=should_continue)
 
-    # Aguarda o lote iniciar o envio (verde "Uploading Files") ou dar erro (vermelho).
-    # O snapshot pre-clique e passado para que o falso positivo de UPLOAD_COMPLETE_TEXTS
-    # pre-existente seja ignorado.
-    wait_for_batch_sent(page, log, should_continue=should_continue, pre_click_body=pre_click_body)
+        # Aguarda confirmacao real de envio: rede (primario) ou texto verde (fallback).
+        wait_for_batch_sent(
+            page,
+            log,
+            should_continue=should_continue,
+            pre_click_body=pre_click_body,
+            network_capture=capture,
+            task_id=task_id,
+            batch=batch,
+        )
+    finally:
+        capture.stop()
 
     if is_last_batch:
-        # Decisao do usuario: assim que o verde "Uploading Files" aparece, FECHA o Chromium sem
-        # esperar a conclusao nem janela de erro. O monitoramento unico (que roda depois desta
-        # task de upload) detecta qualquer arquivo nao-Ready (error/processing) e trata:
-        # deletar na web + converter para PDF + reenviar.
-        log("info", "Ultimo lote enviado (Uploading Files); fechando o Chromium sem esperar.")
+        # Decisao do usuario: fecha o Chromium imediatamente apos confirmacao do envio,
+        # sem aguardar conclusao total. O monitoramento posterior trata arquivos nao-Ready.
+        log("info", "Ultimo lote confirmado como enviado; fechando o Chromium sem esperar conclusao.")
     else:
-        # Entre lotes: janela curta vigiando o vermelho (o erro costuma surgir no ultimo arquivo
-        # do lote) antes de seguir direto ao Choose Files do proximo lote, sem recarregar a tela.
+        # Entre lotes: janela curta vigiando o vermelho antes de seguir ao proximo lote.
         if watch_for_error_window(page, POST_SENT_ERROR_WATCH_SECONDS, should_continue=should_continue):
             raise UploadFailed("uploading error")
         log("info", "Lote enviado; seguindo ao proximo lote na mesma tela.")
@@ -730,6 +935,8 @@ def isolate_one_by_one(
     log: Callable,
     on_file_error: Callable | None,
     should_continue: Callable[[], bool] | None = None,
+    *,
+    task_id: int = 0,
 ) -> list[dict[str, Any]]:
     """Fallback robusto: reenvia cada arquivo do lote individualmente para isolar os corrompidos.
 
@@ -744,7 +951,7 @@ def isolate_one_by_one(
     for solo_item in list(batch):
         check_continue(should_continue)
         try:
-            healthy_results.extend(upload_batch(page, [solo_item], log, should_continue=should_continue))
+            healthy_results.extend(upload_batch(page, [solo_item], log, should_continue=should_continue, task_id=task_id))
             log("info", f"Arquivo revalidado individualmente com sucesso: {solo_item.get('file_name')}")
         except UploadFailed as solo_exc:
             if "uploading error" not in str(solo_exc).lower():
@@ -768,6 +975,8 @@ def handle_uploading_error(
     log: Callable,
     on_file_error: Callable | None,
     should_continue: Callable[[], bool] | None = None,
+    *,
+    task_id: int = 0,
 ) -> list[dict[str, Any]]:
     """Modo hibrido de tratamento do 'Upload Error'.
 
@@ -797,7 +1006,7 @@ def handle_uploading_error(
             metadata={"candidate": candidate_name},
         )
         try:
-            result = upload_batch(page, remainder, log, should_continue=should_continue)
+            result = upload_batch(page, remainder, log, should_continue=should_continue, task_id=task_id)
             finalize_corrupted([candidate], log, on_file_error)
             return result
         except UploadFailed as exc:
@@ -809,7 +1018,7 @@ def handle_uploading_error(
             except Exception:
                 pass
 
-    return isolate_one_by_one(page, batch, payload, workspace_name, log, on_file_error, should_continue)
+    return isolate_one_by_one(page, batch, payload, workspace_name, log, on_file_error, should_continue, task_id=task_id)
 
 
 def upload_files_to_workspace(
@@ -876,6 +1085,7 @@ def upload_files_to_workspace(
                         log,
                         should_continue=should_continue,
                         is_last_batch=(index == len(batches)),
+                        task_id=task_id,
                     )
                 except RecoverableUploadUiError as exc:
                     error_screenshot_saved = save_recovery_screenshot(browser, task_id, log)
@@ -954,6 +1164,7 @@ def upload_files_to_workspace(
                         log,
                         on_file_error,
                         should_continue=should_continue,
+                        task_id=task_id,
                     )
                     if not batch_result:
                         log("info", f"Todos os arquivos do lote {batch_number} foram confirmados como corrompidos.")
