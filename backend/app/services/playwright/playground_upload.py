@@ -132,11 +132,13 @@ def _count_files_in_inputs(page) -> int:
 
 
 def choose_files(page, paths: list[str], log: Callable) -> None:
-    """Abre o file-chooser (ou usa o input direto) e verifica que os arquivos foram
-    realmente anexados aos inputs da pagina antes de retornar.
+    """Abre o file-chooser (ou usa o input direto) e registra, como DIAGNOSTICO, quantos
+    arquivos ficaram presos aos inputs.
 
-    Levanta UploadFailed se, apos a selecao, nenhum arquivo for detectado nos inputs
-    via avaliacao JS — isso evita um clique de Upload "no escuro" sem payload real.
+    A contagem 0 NAO e fatal: o Playground (React) costuma ler os arquivos do file chooser
+    para o estado da app e limpar/descartar input.files, ou usar um input em shadow DOM que
+    querySelectorAll(document) nao alcanca. A confirmacao REAL do envio fica por conta de
+    wait_for_batch_sent (rede / verde "Uploading Files" pos-clique) + timeout.
     """
     expected_count = len(paths)
     try:
@@ -177,14 +179,18 @@ def choose_files(page, paths: list[str], log: Callable) -> None:
         },
     )
 
-    if attached_count == 0:
-        raise UploadFailed(
-            f"Arquivos nao anexados ao input apos selecao "
-            f"(0 de {expected_count} detectados via JS). "
-            "O Playground pode ter ignorado o file chooser — nenhum dado seria enviado."
+    if attached_count <= 0:
+        # NAO fatal: em producao o file chooser entregou os arquivos, mas input.files ficou
+        # 0 (React consome e limpa o input, ou input em shadow DOM fora do alcance do JS).
+        # Bloquear aqui era falso negativo (fechava sem tentar enviar). Seguimos; quem decide
+        # de verdade e wait_for_batch_sent (rede / verde pos-clique) + o timeout.
+        log(
+            "warning",
+            "Nenhum arquivo visto em input[type=file] via JS (normal no Playground React: "
+            "le os arquivos e limpa o input). Prosseguindo; envio sera confirmado por rede/verde.",
+            metadata={"expected": expected_count, "detected": attached_count},
         )
-
-    if 0 < attached_count < expected_count:
+    elif attached_count < expected_count:
         log(
             "warning",
             "Anexo parcial detectado; prosseguindo (Playground pode usar multiplos inputs).",
