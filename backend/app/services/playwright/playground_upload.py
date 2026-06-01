@@ -335,6 +335,47 @@ def _url_looks_like_upload(url: str) -> bool:
     return bool(_UPLOAD_URL_PATTERN.search(url))
 
 
+# Content-types que indicam um upload REAL de arquivo pelo navegador:
+#  - multipart/form-data: form padrao do navegador carregando um arquivo;
+#  - application/octet-stream e mimes de arquivo (pdf/office/imagem/...): PUT direto
+#    (S3/blob) com o conteudo bruto do arquivo no corpo.
+# As chamadas de API/telemetria de fundo do Playground (polling de status, fetch de dados
+# do workspace) usam application/json / urlencoded e NAO devem confirmar o envio — eram a
+# causa do falso positivo "clica Upload Files e finaliza sem enviar nenhum arquivo".
+_FILE_UPLOAD_CONTENT_TYPES = (
+    "multipart/form-data",
+    "application/octet-stream",
+    "application/pdf",
+    "application/msword",
+    "application/vnd",
+    "application/zip",
+    "image/",
+    "video/",
+    "audio/",
+)
+
+
+def _request_content_type(request) -> str:
+    try:
+        headers = request.headers or {}
+    except Exception:
+        return ""
+    return (headers.get("content-type") or "").lower()
+
+
+def _request_is_file_upload(request) -> bool:
+    """True quando a requisicao realmente carrega o conteudo de um arquivo (multipart/binario).
+
+    Distingue o upload REAL das chamadas de fundo (JSON/urlencoded) que tambem batem no
+    _UPLOAD_URL_PATTERN — sem essa checagem, um POST de polling para `/.../files` confirmava
+    o envio de forma precoce, antes mesmo do verde "Uploading Files" surgir.
+    """
+    content_type = _request_content_type(request)
+    if not content_type:
+        return False
+    return any(token in content_type for token in _FILE_UPLOAD_CONTENT_TYPES)
+
+
 class _NetworkCapture:
     """Registra requisicoes POST/PUT disparadas apos o clique de upload.
 
@@ -357,18 +398,35 @@ class _NetworkCapture:
 
     def _on_response(self, response) -> None:
         try:
-            method = (response.request.method or "").upper()
+            request = response.request
+            method = (request.method or "").upper()
             url = response.url or ""
             status = response.status
             if method not in ("POST", "PUT", "PATCH"):
                 return
-            entry = {"method": method, "url": url, "status": str(status)}
+            content_type = _request_content_type(request)
+            is_file_upload = _request_is_file_upload(request)
+            entry = {
+                "method": method,
+                "url": url,
+                "status": str(status),
+                "content_type": content_type,
+                "file_upload": str(is_file_upload),
+            }
             with self._lock:
                 self._requests.append(entry)
-                if status and 200 <= int(status) < 300 and _url_looks_like_upload(url):
-                    if not self._confirmed:
-                        self._confirmed = True
-                        self._confirmed_url = url
+                # So confirma o envio quando a resposta 2xx for de uma URL de upload E a
+                # requisicao realmente carregar o conteudo de um arquivo (multipart/binario).
+                # Chamadas de fundo (JSON) ficam de fora -> o verde "Uploading Files" decide.
+                if (
+                    status
+                    and 200 <= int(status) < 300
+                    and _url_looks_like_upload(url)
+                    and is_file_upload
+                    and not self._confirmed
+                ):
+                    self._confirmed = True
+                    self._confirmed_url = url
         except Exception:
             pass
 
