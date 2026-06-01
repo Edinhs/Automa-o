@@ -966,10 +966,38 @@ function zW(){
     const isEn = settings.language === "en-US" || settings.language === "en";
     
     const services = [
-        { name: isEn ? "Dashboard UI" : "Interface Dashboard", status: "ONLINE", desc: "React Single Page App", color: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20" },
-        { name: "FastAPI Backend", status: healthErr ? "OFFLINE" : `ONLINE (${latency}ms)`, desc: "Python REST API / app.main", color: healthErr ? "text-red-500 bg-red-500/10 border-red-500/20" : "text-emerald-500 bg-emerald-500/10 border-emerald-500/20" },
-        { name: isEn ? "Database SQLite" : "Banco de Dados SQLite", status: healthErr ? "INDISPONÍVEL" : "ONLINE", desc: "data/automation.db", color: healthErr ? "text-amber-500 bg-amber-500/10 border-amber-500/20" : "text-emerald-500 bg-emerald-500/10 border-emerald-500/20" },
-        { name: isEn ? "Local Agent (Playwright)" : "Agente Local (Playwright)", status: "ONLINE", desc: "Active Background Worker", color: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20" }
+        { 
+            name: isEn ? "Dashboard UI" : "Interface Dashboard", 
+            status: "ONLINE", 
+            desc: "React Single Page App", 
+            color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.15)]", 
+            dotColor: "bg-emerald-400 shadow-[0_0_8px_#10b981]",
+            icon: h.jsx("svg", { className: "h-5 w-5 text-blue-400", fill: "none", stroke: "currentColor", strokeWidth: "2", viewBox: "0 0 24 24", children: h.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" }) })
+        },
+        { 
+            name: "FastAPI Backend", 
+            status: healthErr ? "OFFLINE" : `ONLINE (${latency}ms)`, 
+            desc: "Python REST API / app.main", 
+            color: healthErr ? "text-red-400 bg-red-500/10 border-red-500/25 shadow-[0_0_15px_rgba(239,68,68,0.15)]" : "text-emerald-400 bg-emerald-500/10 border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.15)]", 
+            dotColor: healthErr ? "bg-red-400 shadow-[0_0_8px_#ef4444]" : "bg-emerald-400 shadow-[0_0_8px_#10b981]",
+            icon: h.jsx("svg", { className: "h-5 w-5 text-indigo-400", fill: "none", stroke: "currentColor", strokeWidth: "2", viewBox: "0 0 24 24", children: h.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" }) })
+        },
+        { 
+            name: isEn ? "Database SQLite" : "Banco de Dados SQLite", 
+            status: healthErr ? "INDISPONÍVEL" : "ONLINE", 
+            desc: "data/automation.db", 
+            color: healthErr ? "text-amber-400 bg-amber-500/10 border-amber-500/25 shadow-[0_0_15px_rgba(245,158,11,0.15)]" : "text-emerald-400 bg-emerald-500/10 border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.15)]", 
+            dotColor: healthErr ? "bg-amber-400 shadow-[0_0_8px_#f59e0b]" : "bg-emerald-400 shadow-[0_0_8px_#10b981]",
+            icon: h.jsx("svg", { className: "h-5 w-5 text-amber-400", fill: "none", stroke: "currentColor", strokeWidth: "2", viewBox: "0 0 24 24", children: h.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" }) })
+        },
+        { 
+            name: isEn ? "Local Agent (Playwright)" : "Agente Local (Playwright)", 
+            status: "ONLINE", 
+            desc: "Active Background Worker", 
+            color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.15)]", 
+            dotColor: "bg-emerald-400 shadow-[0_0_8px_#10b981]",
+            icon: h.jsx("svg", { className: "h-5 w-5 text-sky-400", fill: "none", stroke: "currentColor", strokeWidth: "2", viewBox: "0 0 24 24", children: h.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" }) })
+        }
     ];
     
     return h.jsxs(h.Fragment, {
@@ -978,105 +1006,244 @@ function zW(){
                 title: isEn ? "About & Diagnostics" : "Sobre & Diagnósticos",
                 subtitle: isEn ? "System health check, logs diagnostic and platform architecture." : "Central de status de saúde do HUB, console de diagnósticos e fluxo de arquitetura."
             }),
-            h.jsx(Ie, {
-                children: h.jsxs("div", {
-                    className: "rounded-xl bg-zinc-950 p-8 text-white relative overflow-hidden",
-                    children: [
-                        h.jsx("div", { className: "absolute -right-10 -bottom-10 h-40 w-40 rounded-full bg-blue-600/10 blur-2xl" }),
-                        h.jsx("p", { className: "text-xs font-semibold uppercase tracking-[0.24em] text-blue-400", children: "Stellantis Automation HUB" }),
-                        h.jsx("h2", { className: "mt-4 text-3xl font-extrabold tracking-tight", children: "Sobre a Plataforma" }),
-                        h.jsx("p", {
-                            className: "mt-4 max-w-3xl text-sm leading-6 text-zinc-300",
-                            children: isEn 
-                                ? "Enterprise application designed to automate, convert documents to PDF, and streamline files upload and tracking to the Stellantis GenAI Playground with visible/headless web scripts."
-                                : "Plataforma integrada de alta performance para automação web, conversão nativa para PDF e controle rigoroso de fluxo de upload de arquivos para o Stellantis GenAI Playground."
-                        }),
-                        h.jsx("button", {
-                            onClick: PW,
-                            className: "mt-6 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded text-xs transition",
-                            children: isEn ? "Download Technical README" : "Baixar README Técnico de Uso"
-                        })
-                    ]
-                })
-            }),
-            h.jsx("h3", { className: "mt-6 mb-3 text-sm font-semibold uppercase tracking-wider text-zinc-500", children: isEn ? "System Component Status" : "Saúde dos Componentes do Sistema" }),
             h.jsx("div", {
-                className: "grid gap-4 sm:grid-cols-2 lg:grid-cols-4",
+                className: "relative overflow-hidden rounded-3xl border border-zinc-200 bg-gradient-to-br from-zinc-950 via-blue-950/80 to-zinc-900 p-8 md:p-12 text-white shadow-2xl dark:border-white/10",
+                children: [
+                    h.jsx("div", { className: "absolute -right-20 -bottom-20 h-72 w-72 rounded-full bg-blue-600/35 blur-3xl opacity-60" }),
+                    h.jsx("div", { className: "absolute -left-20 -top-20 h-60 w-60 rounded-full bg-indigo-600/25 blur-3xl opacity-40" }),
+                    h.jsx("div", { 
+                        className: "absolute inset-0 opacity-[0.03] dark:opacity-[0.06]", 
+                        style: { backgroundImage: "radial-gradient(#fff 1px, transparent 1px)", backgroundSize: "16px 16px" } 
+                    }),
+                    h.jsxs("div", {
+                        className: "relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6",
+                        children: [
+                            h.jsxs("div", {
+                                className: "max-w-2xl",
+                                children: [
+                                    h.jsxs("div", {
+                                        className: "inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 px-3.5 py-1.5 text-xs font-semibold tracking-wider text-blue-300 uppercase shadow-inner backdrop-blur-md",
+                                        children: [
+                                            h.jsx("span", { className: "h-2.5 w-2.5 rounded-full bg-blue-400 animate-pulse" }),
+                                            "Stellantis Intelligent Core v1.0"
+                                        ]
+                                    }),
+                                    h.jsx("h2", { 
+                                        className: "mt-5 text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-zinc-100 to-zinc-300 leading-tight drop-shadow-sm", 
+                                        children: "Stellantis Automation HUB" 
+                                    }),
+                                    h.jsx("p", {
+                                        className: "mt-4 text-sm md:text-base leading-relaxed text-zinc-300/90 font-medium",
+                                        children: isEn 
+                                            ? "Enterprise-grade robotic desktop automation platform designed to scan local directories, convert documents natively to PDF, and streamline files upload and tracking to the Stellantis GenAI Playground with visible/headless web scripts."
+                                            : "Plataforma integrada de automação inteligente (RPA) para varredura de diretórios, conversão nativa para PDF e controle de ciclo de envio de arquivos para o Stellantis GenAI Playground."
+                                    })
+                                ]
+                            }),
+                            h.jsxs("button", {
+                                onClick: PW,
+                                className: "self-start md:self-center shrink-0 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 px-6 rounded-2xl text-xs transition duration-300 shadow-[0_4px_20px_rgba(37,99,235,0.3)] hover:shadow-[0_4px_30px_rgba(37,99,235,0.55)] hover:scale-[1.03] active:scale-[0.97] flex items-center gap-2.5",
+                                children: [
+                                    h.jsx("svg", {
+                                        className: "h-4 w-4 fill-current",
+                                        viewBox: "0 0 20 20",
+                                        children: h.jsx("path", { d: "M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" })
+                                    }),
+                                    h.jsx("span", { children: isEn ? "Download Technical README" : "Baixar README Técnico de Uso" })
+                                ]
+                            })
+                        ]
+                    })
+                ]
+            }),
+            h.jsx("h3", { className: "mt-8 mb-4 text-xs font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 font-mono", children: isEn ? "SYSTEM HEALTH STATUS" : "STATUS DE SAÚDE DOS COMPONENTES" }),
+            h.jsx("div", {
+                className: "grid gap-5 sm:grid-cols-2 lg:grid-cols-4",
                 children: services.map(srv => h.jsxs(Ie, {
-                    className: "p-4 flex flex-col justify-between h-32 border border-zinc-200 dark:border-white/10 rounded-xl bg-white dark:bg-zinc-950/80 shadow-sm",
+                    className: "p-6 flex flex-col justify-between h-40 border border-zinc-200/80 dark:border-white/5 rounded-2xl bg-white/40 dark:bg-zinc-950/40 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.2)] hover:-translate-y-1 hover:border-blue-500/25 hover:shadow-[0_12px_40px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_12px_40px_rgba(0,0,0,0.35)] transition-all duration-300",
                     children: [
                         h.jsxs("div", {
+                            className: "flex items-start justify-between gap-4",
                             children: [
-                                srv.desc ? h.jsx("p", { className: "text-xs text-zinc-400 dark:text-zinc-500", children: srv.desc }) : null,
-                                h.jsx("h4", { className: "text-sm font-bold text-zinc-800 dark:text-zinc-200 mt-1", children: srv.name })
+                                h.jsxs("div", {
+                                    children: [
+                                        srv.desc ? h.jsx("p", { className: "text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest font-mono", children: srv.desc }) : null,
+                                        h.jsx("h4", { className: "text-sm font-extrabold text-zinc-800 dark:text-zinc-100 mt-2", children: srv.name })
+                                    ]
+                                }),
+                                h.jsx("div", { className: "p-2 rounded-xl bg-zinc-50 dark:bg-zinc-900/60 border border-zinc-100 dark:border-white/5", children: srv.icon })
                             ]
                         }),
-                        h.jsx("span", {
-                            className: ["self-start rounded-full border px-2.5 py-0.5 text-xs font-bold", srv.color].join(" "),
-                            children: srv.status
+                        h.jsxs("div", {
+                            className: "flex items-center justify-between mt-4",
+                            children: [
+                                h.jsxs("div", {
+                                    className: "flex items-center gap-2",
+                                    children: [
+                                        h.jsx("span", { className: ["h-2.5 w-2.5 rounded-full animate-pulse", srv.dotColor].join(" ") }),
+                                        h.jsx("span", { className: "text-xs font-extrabold tracking-wider text-zinc-500 dark:text-zinc-400", children: "STATUS" })
+                                    ]
+                                }),
+                                h.jsx("span", {
+                                    className: ["rounded-full border px-3 py-1 text-[10px] font-black tracking-wider uppercase", srv.color].join(" "),
+                                    children: srv.status
+                                })
+                            ]
                         })
                     ]
                 }, srv.name))
             }),
             h.jsxs("div", {
-                className: "mt-6 rounded-xl border border-zinc-800 bg-zinc-950 p-6 font-mono text-sm shadow-2xl relative",
+                className: "mt-8 rounded-3xl border border-zinc-200 dark:border-zinc-800/80 bg-zinc-950 overflow-hidden shadow-2xl dark:shadow-[0_20px_50px_rgba(0,0,0,0.5)] relative",
                 children: [
                     h.jsxs("div", {
-                        className: "mb-4 flex flex-col gap-3 border-b border-white/10 pb-4 text-xs text-zinc-400 sm:flex-row sm:items-center sm:justify-between",
+                        className: "bg-zinc-900/90 dark:bg-zinc-900/70 backdrop-blur-md px-5 py-4 flex items-center justify-between border-b border-zinc-800/80",
                         children: [
                             h.jsxs("div", {
                                 className: "flex items-center gap-2",
                                 children: [
-                                    h.jsx("span", { className: "h-2.5 w-2.5 rounded-full bg-emerald-500 animate-ping" }),
-                                    h.jsx("span", { className: "font-semibold text-emerald-400", children: "live-diagnostic-console" })
+                                    h.jsx("span", { className: "h-3.5 w-3.5 rounded-full bg-[#ff5f56] border border-[#e0443e] cursor-pointer hover:opacity-80 transition shadow-[0_0_6px_rgba(255,95,86,0.4)]" }),
+                                    h.jsx("span", { className: "h-3.5 w-3.5 rounded-full bg-[#ffbd2e] border border-[#dea123] cursor-pointer hover:opacity-80 transition shadow-[0_0_6px_rgba(255,189,46,0.4)]" }),
+                                    h.jsx("span", { className: "h-3.5 w-3.5 rounded-full bg-[#27c93f] border border-[#1aab29] cursor-pointer hover:opacity-80 transition shadow-[0_0_6px_rgba(39,201,63,0.4)]" })
                                 ]
                             }),
-                            h.jsx("button", {
+                            h.jsxs("div", {
+                                className: "flex items-center gap-2 text-zinc-400 font-mono text-xs font-bold tracking-wide",
+                                children: [
+                                    h.jsx("span", { className: "h-2 w-2 rounded-full bg-emerald-500 animate-ping" }),
+                                    h.jsx("span", { children: "live-diagnostic-console" })
+                                ]
+                            }),
+                            h.jsxs("button", {
                                 type: "button",
                                 onClick: handleRunDiagnostic,
                                 disabled: isRunningDiagnostic,
-                                className: "rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-3 py-1.5 font-bold text-white text-[11px] transition-all",
-                                children: isRunningDiagnostic ? (isEn ? "Running..." : "Diagnosticando...") : (isEn ? "Run Full Diagnostic" : "Executar Diagnóstico Geral")
+                                className: "rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-4.5 py-2 font-bold text-white text-xs transition duration-200 shadow-[0_2px_10px_rgba(37,99,235,0.25)] hover:shadow-[0_2px_15px_rgba(37,99,235,0.4)] flex items-center gap-1.5",
+                                children: [
+                                    h.jsx("svg", {
+                                        className: ["h-3 w-3 fill-current", isRunningDiagnostic ? "animate-spin" : ""].join(" "),
+                                        viewBox: "0 0 24 24",
+                                        children: h.jsx("path", { d: "M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z" })
+                                    }),
+                                    h.jsx("span", { children: isRunningDiagnostic ? (isEn ? "Running..." : "Diagnosticando...") : (isEn ? "Run Full Diagnostic" : "Executar Diagnóstico Geral") })
+                                ]
                             })
                         ]
                     }),
                     h.jsx("div", {
-                        className: "space-y-1.5 max-h-60 overflow-y-auto custom-scrollbar text-xs text-zinc-300",
+                        className: "p-6 font-mono text-xs bg-zinc-950 min-h-[180px] max-h-72 overflow-y-auto custom-scrollbar text-emerald-400 space-y-2.5 leading-relaxed shadow-inner",
                         children: diagnosticLogs.length > 0 
                             ? diagnosticLogs.map((log, idx) => {
                                 const isErr = log.includes("[ERROR]");
                                 const isOk = log.includes("[OK]");
                                 return h.jsx("p", {
-                                    className: isErr ? "text-red-400 animate-shake" : isOk ? "text-emerald-400" : "text-blue-300",
-                                    children: log
+                                    className: [
+                                        isErr ? "text-red-400 font-bold" : isOk ? "text-emerald-400" : "text-blue-300",
+                                        "flex items-start gap-2"
+                                    ].join(" "),
+                                    children: h.jsxs("span", {
+                                        children: [
+                                            h.jsx("span", { className: "text-zinc-600 select-none", children: ">" }),
+                                            " ",
+                                            log
+                                        ]
+                                    })
                                 }, idx);
                             })
-                            : h.jsx("p", { className: "text-zinc-500 italic", children: isEn ? "Console idle. Click the button above to run diagnostic test." : "Terminal inativo. Clique no botão acima para iniciar os testes de conexões." })
+                            : h.jsxs("div", {
+                                className: "flex flex-col items-center justify-center py-8 text-center text-zinc-500",
+                                children: [
+                                    h.jsx("span", { className: "text-2xl mb-2", children: "💻" }),
+                                    h.jsx("p", { className: "italic font-semibold text-sm", children: isEn ? "Console idle. Click the button above to run diagnostic test." : "Terminal inativo. Clique no botão acima para iniciar os testes de conexões." })
+                                ]
+                            })
                     })
                 ]
             }),
             h.jsxs("div", {
-                className: "mt-6 grid gap-6 md:grid-cols-2",
+                className: "mt-8 grid gap-8 md:grid-cols-2",
                 children: [
                     h.jsxs("div", {
-                        className: "bg-zinc-50 p-6 dark:bg-zinc-950/40 rounded-xl border border-zinc-200 dark:border-white/10 h-full flex flex-col justify-between shadow-sm",
+                        className: "bg-white/40 dark:bg-zinc-950/40 backdrop-blur-md p-6 rounded-3xl border border-zinc-200/80 dark:border-white/5 h-full flex flex-col justify-between shadow-lg",
                         children: [
-                            h.jsx("h4", { className: "font-bold text-zinc-800 dark:text-zinc-200 text-sm mb-3", children: isEn ? "HUB System Architecture" : "Fluxo da Arquitetura do Sistema" }),
                             h.jsxs("div", {
-                                className: "flex flex-col gap-4 text-xs mt-2",
+                                className: "flex items-center gap-2.5 mb-6",
                                 children: [
-                                    h.jsxs("div", { className: "p-3 rounded-lg border border-zinc-200 dark:border-white/10 bg-white dark:bg-zinc-900/50", children: [h.jsx("b", { className: "text-blue-600 dark:text-blue-400", children: "1. Monitoramento" }), h.jsx("p", { className: "text-zinc-500 mt-1", children: isEn ? "Scans folders for new versions." : "Varredura local em busca de novidades." })] }),
-                                    h.jsxs("div", { className: "p-3 rounded-lg border border-zinc-200 dark:border-white/10 bg-white dark:bg-zinc-900/50", children: [h.jsx("b", { className: "text-blue-600 dark:text-blue-400", children: "2. Staging" }), h.jsx("p", { className: "text-zinc-500 mt-1", children: isEn ? "Saves copy in temporal folder." : "Grava cópia na pasta temp local." })] }),
-                                    h.jsxs("div", { className: "p-3 rounded-lg border border-zinc-200 dark:border-white/10 bg-white dark:bg-zinc-900/50", children: [h.jsx("b", { className: "text-blue-600 dark:text-blue-400", children: "3. Conversão" }), h.jsx("p", { className: "text-zinc-500 mt-1", children: isEn ? "Converts MS Office docs to PDF." : "Converte formatos MS Office para PDF." })] }),
-                                    h.jsxs("div", { className: "p-3 rounded-lg border border-zinc-200 dark:border-white/10 bg-white dark:bg-zinc-900/50", children: [h.jsx("b", { className: "text-blue-600 dark:text-blue-400", children: "4. Envio Web" }), h.jsx("p", { className: "text-zinc-500 mt-1", children: isEn ? "Fast upload to GenAI Playground." : "Upload rápido via Playwright ao Playground." })] })
+                                    h.jsx("div", {
+                                        className: "p-2 rounded-xl bg-blue-500/10 text-blue-500 border border-blue-500/20",
+                                        children: h.jsx("svg", { className: "h-4 w-4", fill: "none", stroke: "currentColor", strokeWidth: "2", viewBox: "0 0 24 24", children: h.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" }) })
+                                    }),
+                                    h.jsx("h4", { className: "font-black text-zinc-800 dark:text-white text-sm uppercase tracking-wider font-mono", children: isEn ? "HUB System Architecture" : "Fluxo da Arquitetura do Sistema" })
+                                ]
+                            }),
+                            h.jsx("div", {
+                                className: "flex flex-col gap-5 text-xs mt-2 relative",
+                                children: [
+                                    h.jsxs("div", { 
+                                        className: "relative p-4 rounded-2xl border border-zinc-200/60 dark:border-white/5 bg-white/70 dark:bg-zinc-900/40 hover:border-blue-500/30 hover:shadow-md transition-all duration-300 flex items-start gap-4",
+                                        children: [
+                                            h.jsx("div", { className: "font-black font-mono text-xl text-blue-500/50 bg-blue-500/5 h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-blue-500/10", children: "01" }),
+                                            h.jsxs("div", {
+                                                children: [
+                                                    h.jsx("b", { className: "text-zinc-800 dark:text-zinc-200 text-sm", children: "🔍 1. Monitoramento Ativo" }),
+                                                    h.jsx("p", { className: "text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed", children: isEn ? "Scans local corporate folders for new/modified versions." : "Varredura contínua em pastas de rede locais em busca de novos arquivos ou versões modificadas." })
+                                                ]
+                                            })
+                                        ]
+                                    }),
+                                    h.jsxs("div", { 
+                                        className: "relative p-4 rounded-2xl border border-zinc-200/60 dark:border-white/5 bg-white/70 dark:bg-zinc-900/40 hover:border-blue-500/30 hover:shadow-md transition-all duration-300 flex items-start gap-4",
+                                        children: [
+                                            h.jsx("div", { className: "font-black font-mono text-xl text-indigo-500/50 bg-indigo-500/5 h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-indigo-500/10", children: "02" }),
+                                            h.jsxs("div", {
+                                                children: [
+                                                    h.jsx("b", { className: "text-zinc-800 dark:text-zinc-200 text-sm", children: "📂 2. Staging / Versionamento" }),
+                                                    h.jsx("p", { className: "text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed", children: isEn ? "Copies documents securely to temporary work folder." : "Cópia segura de arquivos para o diretório de trabalho temporário local, gerando logs de SHA-256 no banco." })
+                                                ]
+                                            })
+                                        ]
+                                    }),
+                                    h.jsxs("div", { 
+                                        className: "relative p-4 rounded-2xl border border-zinc-200/60 dark:border-white/5 bg-white/70 dark:bg-zinc-900/40 hover:border-blue-500/30 hover:shadow-md transition-all duration-300 flex items-start gap-4",
+                                        children: [
+                                            h.jsx("div", { className: "font-black font-mono text-xl text-amber-500/50 bg-amber-500/5 h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-amber-500/10", children: "03" }),
+                                            h.jsxs("div", {
+                                                children: [
+                                                    h.jsx("b", { className: "text-zinc-800 dark:text-zinc-200 text-sm", children: "⚙️ 3. Conversão Nativa" }),
+                                                    h.jsx("p", { className: "text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed", children: isEn ? "Converts Office formats to PDF natively." : "Conversão headless nativa de formatos Office para PDF (usando LibreOffice local) para estabilizar o envio." })
+                                                ]
+                                            })
+                                        ]
+                                    }),
+                                    h.jsxs("div", { 
+                                        className: "relative p-4 rounded-2xl border border-zinc-200/60 dark:border-white/5 bg-white/70 dark:bg-zinc-900/40 hover:border-blue-500/30 hover:shadow-md transition-all duration-300 flex items-start gap-4",
+                                        children: [
+                                            h.jsx("div", { className: "font-black font-mono text-xl text-emerald-500/50 bg-emerald-500/5 h-10 w-10 shrink-0 rounded-xl flex items-center justify-center border border-emerald-500/10", children: "04" }),
+                                            h.jsxs("div", {
+                                                children: [
+                                                    h.jsx("b", { className: "text-zinc-800 dark:text-zinc-200 text-sm", children: "🚀 4. Automação Playwright" }),
+                                                    h.jsx("p", { className: "text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed", children: isEn ? "Fast session upload to GenAI Playground." : "Robô de background (Playwright Chromium) realiza o login corporativo e faz o upload rápido para o Playground." })
+                                                ]
+                                            })
+                                        ]
+                                    })
                                 ]
                             })
                         ]
                     }),
                     h.jsxs("div", {
-                        className: "bg-zinc-50 p-6 dark:bg-zinc-950/40 rounded-xl border border-zinc-200 dark:border-white/10 h-full flex flex-col justify-between shadow-sm",
+                        className: "bg-white/40 dark:bg-zinc-950/40 backdrop-blur-md p-6 rounded-3xl border border-zinc-200/80 dark:border-white/5 h-full flex flex-col justify-between shadow-lg",
                         children: [
-                            h.jsx("h4", { className: "font-bold text-zinc-800 dark:text-zinc-200 text-sm mb-3", children: isEn ? "System Usage README.md" : "Manual de Uso do HUB (README.md)" }),
+                            h.jsxs("div", {
+                                className: "flex items-center gap-2.5 mb-6",
+                                children: [
+                                    h.jsx("div", {
+                                        className: "p-2 rounded-xl bg-indigo-500/10 text-indigo-500 border border-indigo-500/20",
+                                        children: h.jsx("svg", { className: "h-4 w-4", fill: "none", stroke: "currentColor", strokeWidth: "2", viewBox: "0 0 24 24", children: h.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" }) })
+                                    }),
+                                    h.jsx("h4", { className: "font-black text-zinc-800 dark:text-white text-sm uppercase tracking-wider font-mono", children: isEn ? "System Usage README.md" : "Manual de Uso do HUB (README.md)" })
+                                ]
+                            }),
                             renderMarkdown(`# Stellantis Automation HUB\n\nPlataforma corporativa integrada para automação inteligente de uploads de arquivos, conversão nativa para PDF e monitoramento ativo com rastro operacional completo no **Stellantis GenAI Playground**.\n\n---\n\n## 🛠️ Visão Geral da Arquitetura\n\nO sistema é desenhado de forma distribuída para garantir isolamento e máxima eficiência operacional em ambientes corporativos Windows:\n\n\`\`\`\n[ Diretório Monitorado ]\n           │\n           ▼ (Varredura Ativa)\n┌──────────────────────┐\n│  Agente Local (CLI)  │ ➔ Conversão HEADLESS nativa com LibreOffice\n└──────────────────────┘\n           │\n           ▼ (Cópia / Staging)\n┌──────────────────────┐\n│   Banco SQLite DB    │ ➔ Rastreabilidade de status, logs e erros\n└──────────────────────┘\n           │\n           ▼ (Envio Seguro)\n┌──────────────────────┐\n│ Playwright Automator │ ➔ Execução visible/headless no Playground\n└──────────────────────┘\n           │\n           ▼ (Visualização)\n┌──────────────────────┐\n│  Dashboard React UI  │ ➔ Painel de controle e auditoria em tempo real\n└──────────────────────┘\n\`\`\`\n\n---\n\n## 🚀 Como Iniciar os Serviços no Windows\n\nA pasta raiz do projeto possui arquivos de lote (\`.bat\`) para facilitar o controle de execução em background:\n\n1. **\`start_all.bat\`**: Inicia automaticamente o banco de dados, o servidor backend FastAPI (porta 8000), o Dashboard React UI (porta 5173) e o Agente Local CLI em janelas de terminal dedicadas.\n2. **\`stop_all.bat\`**: Finaliza com segurança todos os processos em execução no sistema.\n3. **\`restart_services.bat\`**: Reinicia todos os módulos operacionais limpando caches temporários de execução.\n4. **\`start_agent.bat\`**: Executa apenas o Agente de background CLI para monitoramento contínuo das pastas de rede vinculadas.\n\n---\n\n## 📊 Guia de Uso das Funcionalidades\n\n### 1. Painel Executivo (Aba Home)\n* **Monitoramento Compacto**: Permite acompanhar os principais indicadores operacionais (Uploads hoje, Taxa de Sucesso, Erros Resolvidos).\n* **Grade Dinâmica**: Clicando no botão **⚙️ Personalizar Dashboard** no canto superior direito, você pode arrastar qualquer cartão métrico, gráfico de Pizza de erros resolvidos, ou tabelas para mudar a ordem, além de redimensionar a largura lateral usando os botões \`+/-\`. O layout personalizado é gravado automaticamente no seu navegador.\n* **Erros Resolvidos**: O gráfico em pizza demonstra a eficiência de resolução de problemas, refletindo imediatamente as ações manuais feitas sobre arquivos com falha.\n\n### 2. Gerenciamento de Automações\n* **Nova Automação**: Crie monitoramentos de diretórios locais apontando para caminhos de rede (ex: \`//servidor/pasta\`).\n* **Upload Manual**: Se precisar enviar um documento de forma urgente sem esperar a varredura da pasta, arraste e solte o arquivo diretamente nesta ação e selecione o Workspace de destino.\n\n### 3. Auditoria de Arquivos\n* **Timeline e Logs**: Cada arquivo possui um botão **Detalhes** e **Logs** para checar os metadados brutos (SHA256, extensões, datas) e os logs em tempo real disparados pelo robô Playwright.\n* **Reprocessar**: Caso um arquivo falhe por timeout ou erro na rede do Playground, clique em **Reprocessar** para recolocá-lo na fila imediatamente (ele será convertido para PDF de forma nativa e enviado novamente).\n* **Resolvido**: Ação manual de segurança para marcar arquivos pendentes/com erros como resolvidos, alimentando o painel de Erros Resolvidos e liberando-os da fila.\n\n---\n\n## ⚙️ Calibração de Parâmetros Operacionais\n\nNa aba **Configurações**, você pode ajustar o comportamento reativo do Stellantis HUB:\n* **Tamanho do lote**: Define quantos arquivos o robô Playwright processará por ciclo de upload. Lotes de **3 a 5 arquivos** são altamente recomendados para evitar sobrecargas de processamento.\n* **Modo Playwright**: \n  - **Headless (Recomendado)**: Executa a automação de forma silenciosa e invisível em background.\n  - **Visível (Visible/Headful)**: Abre uma janela real do navegador Chromium na tela. Excelente para auditar o fluxo e diagnosticar problemas ou validar logins de rede corporativos.\n* **Frequência de Polling**: Calibre a taxa com que a Home atualiza seus indicadores junto ao servidor backend (padrão de **8 segundos** para equilíbrio ideal de recursos).\n\n---\n\n© 2026 Stellantis GenAI Platform. Todos os direitos reservados.\n`)
                         ]
                     })
