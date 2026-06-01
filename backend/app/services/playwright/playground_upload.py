@@ -133,24 +133,68 @@ def choose_files(page, paths: list[str], log: Callable) -> None:
 
 
 def wait_for_selected_files(page, batch: list[dict[str, Any]], log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
+    """Aguarda confirmacao de que os arquivos foram realmente anexados antes do clique final.
+
+    Hierarquia de evidencias (da mais forte para a mais fraca):
+      1. Todos os nomes aparecem no body -> retorna imediatamente.
+      2. Pelo menos UM nome aparece E o botao Upload Files esta habilitado (apos 5 s) ->
+         evidencia parcial aceita, com aviso.
+      3. Nenhum nome visivel mas botao habilitado por 5 s consecutivos -> aceita com aviso
+         explicito (Playground pode exibir nomes de forma truncada/inacessivel via inner_text).
+      4. Timeout de 60 s sem nenhuma evidencia -> levanta UploadFailed para nao clicar
+         Upload "no escuro" (antigo comportamento: apenas logava warning e continuava).
+    """
     expected_names = [str(item.get("file_name") or Path(item["path"]).name) for item in batch]
     started_at = time.monotonic()
     deadline = time.monotonic() + 60
     log("info", "Aguardando arquivos carregarem antes do Upload Files final.", metadata={"files": expected_names})
+    button_enabled_since: float | None = None
     while time.monotonic() < deadline:
         check_continue(should_continue)
         body = page_text(page).lower()
         found = [name for name in expected_names if name.lower() in body]
+
+        # Evidencia 1: todos os nomes confirmados na tela.
         if len(found) == len(expected_names):
-            log("info", "Arquivos carregados na tela.", metadata={"files": found})
+            log("info", "Arquivos carregados na tela (todos os nomes confirmados).", metadata={"files": found})
             return
-        if time.monotonic() - started_at >= 5 and final_upload_button_enabled(page):
-            log("info", "Botao Upload Files final habilitado apos selecao dos arquivos.", metadata={"loaded": found, "expected": expected_names})
+
+        elapsed = time.monotonic() - started_at
+        button_on = final_upload_button_enabled(page)
+
+        # Evidencia 2: pelo menos um nome visivel + botao habilitado (apos 5 s).
+        if found and button_on and elapsed >= 5:
+            log(
+                "info",
+                "Upload Files habilitado com parte dos arquivos visivel; prosseguindo.",
+                metadata={"loaded": found, "missing": [n for n in expected_names if n not in found]},
+            )
             return
+
+        # Evidencia 3: botao habilitado por >= 5 s consecutivos mesmo sem nomes visiveis
+        # (Playground pode truncar nomes na UI; botao habilitado e o sinal mais forte).
+        if button_on:
+            if button_enabled_since is None:
+                button_enabled_since = time.monotonic()
+            elif time.monotonic() - button_enabled_since >= 5:
+                log(
+                    "warning",
+                    "Botao Upload Files habilitado por 5 s sem confirmar nomes na tela; prosseguindo com cautela.",
+                    metadata={"expected": expected_names, "visible_body_sample": body[:300]},
+                )
+                return
+        else:
+            button_enabled_since = None
+
         if found:
             log("info", "Parte dos arquivos ja aparece na tela.", metadata={"loaded": found, "expected": expected_names})
         time.sleep(1)
-    log("warning", "Nao foi possivel confirmar todos os nomes na tela; tentando Upload Files final mesmo assim.", metadata={"files": expected_names})
+
+    # Nenhuma evidencia de que os arquivos foram anexados: nao clicar Upload no escuro.
+    raise UploadFailed(
+        f"Arquivos nao confirmados como anexados apos 60 s: {expected_names}. "
+        "Abortando para evitar clique de Upload sem arquivos reais."
+    )
 
 
 def final_upload_button_enabled(page) -> bool:
@@ -212,26 +256,80 @@ def ensure_upload_area_open(page, log: Callable) -> None:
     click_upload_files(page, log)
 
 
-def wait_for_batch_sent(page, log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
+def _body_has_active(body_lower: str) -> bool:
+    return any(text.lower() in body_lower for text in UPLOAD_ACTIVE_TEXTS)
+
+
+def _body_has_complete(body_lower: str) -> bool:
+    return any(text.lower() in body_lower for text in UPLOAD_COMPLETE_TEXTS)
+
+
+def wait_for_batch_sent(
+    page,
+    log: Callable,
+    should_continue: Callable[[], bool] | None = None,
+    *,
+    pre_click_body: str = "",
+) -> None:
     """Aguarda o lote iniciar o envio (verde "Uploading Files") ou dar erro (vermelho).
 
     Levanta UploadFailed("uploading error") ao ver o vermelho; levanta UploadFailed
     generico se nada acontecer dentro de BATCH_SENT_TIMEOUT_SECONDS.
+
+    pre_click_body (opcional): snapshot do body ANTES do clique de upload, em lower-case.
+    Usado para eliminar o falso positivo em que UPLOAD_COMPLETE_TEXTS ja estava presente
+    na tela de sessoes anteriores antes de este lote comecar a subir.
+
+    Regra de conclusao:
+      - Prioridade 1: verde UPLOAD_ACTIVE_TEXTS aparece  -> confirmado, retorna.
+      - Prioridade 2: UPLOAD_COMPLETE_TEXTS aparece SOMENTE se o texto NAO estava no
+        snapshot pre-clique (i.e. surgiu DEPOIS do clique desta sessao).  Isso evita que
+        labels de arquivos ja enviados ("Uploaded", "Upload date", "Concluido") disparem
+        o retorno precoce.
+      - Nunca retorna por UPLOAD_COMPLETE_TEXTS isolado sem transicao observada.
     """
     deadline = time.monotonic() + BATCH_SENT_TIMEOUT_SECONDS
+    # Textos de "complete" pre-existentes no snapshot (antes do clique).
+    pre_complete_tokens = {text.lower() for text in UPLOAD_COMPLETE_TEXTS if text.lower() in pre_click_body}
+    if pre_complete_tokens:
+        log(
+            "info",
+            "Snapshot pre-clique contem textos de conclusao; ignorando-os como indicador de envio deste lote.",
+            metadata={"pre_complete_tokens": sorted(pre_complete_tokens)},
+        )
+
     while time.monotonic() < deadline:
         check_continue(should_continue)
         body = page_text(page).lower()
+
+        # Erro vermelho tem prioridade maxima.
         if any(text.lower() in body for text in UPLOAD_ERROR_TEXTS):
             raise UploadFailed("uploading error")
-        if any(text.lower() in body for text in UPLOAD_ACTIVE_TEXTS):
+
+        # Verde "Uploading Files": evidencia positiva de que este lote iniciou o envio.
+        if _body_has_active(body):
             log("info", "Uploading Files (verde) detectado; lote enviado.")
             return
-        # Lotes muito pequenos podem concluir direto sem passar pelo texto ativo.
-        if any(text.lower() in body for text in UPLOAD_COMPLETE_TEXTS):
-            log("info", "Upload concluido diretamente sem fase ativa detectada.")
+
+        # "Upload complete" / "Uploaded" etc. so vale como sinal de conclusao se surgiu
+        # APOS o clique, ou seja, se NAO estava no snapshot pre-clique.
+        # Avaliamos token a token: um novo token de conclusao que nao estava antes indica
+        # que o Playground processou o lote e exibiu o resultado.
+        new_complete_tokens = {
+            text.lower()
+            for text in UPLOAD_COMPLETE_TEXTS
+            if text.lower() in body and text.lower() not in pre_complete_tokens
+        }
+        if new_complete_tokens:
+            log(
+                "info",
+                "Upload concluido diretamente (novo texto de conclusao detectado apos o clique).",
+                metadata={"new_complete_tokens": sorted(new_complete_tokens)},
+            )
             return
+
         time.sleep(0.4)
+
     if body_has_upload_error(page):
         raise UploadFailed("uploading error")
     raise UploadFailed("Lote nao iniciou o envio no tempo esperado (30s).")
@@ -579,10 +677,19 @@ def upload_batch(
     choose_files(page, paths, log)
     check_continue(should_continue)
     wait_for_selected_files(page, batch, log, should_continue=should_continue)
+
+    # Captura o estado do body ANTES do clique de upload para eliminar falsos positivos:
+    # textos de "Upload complete"/"Uploaded" ja presentes na tela (arquivos de sessoes
+    # anteriores, coluna "Upload date", etc.) nao devem ser contados como evidencia de
+    # que ESTE lote iniciou o envio.
+    pre_click_body = page_text(page).lower()
+
     click_final_upload_with_recovery(page, log, should_continue=should_continue)
 
     # Aguarda o lote iniciar o envio (verde "Uploading Files") ou dar erro (vermelho).
-    wait_for_batch_sent(page, log, should_continue=should_continue)
+    # O snapshot pre-clique e passado para que o falso positivo de UPLOAD_COMPLETE_TEXTS
+    # pre-existente seja ignorado.
+    wait_for_batch_sent(page, log, should_continue=should_continue, pre_click_body=pre_click_body)
 
     if is_last_batch:
         # Decisao do usuario: assim que o verde "Uploading Files" aparece, FECHA o Chromium sem
