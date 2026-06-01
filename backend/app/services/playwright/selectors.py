@@ -209,6 +209,20 @@ UPLOAD_ERROR_TEXTS = [
 # Backward-compat alias used by other modules
 UPLOAD_PROGRESS_TEXTS = UPLOAD_ACTIVE_TEXTS + UPLOAD_COMPLETE_TEXTS
 
+# Rotulos (aria-label/title) do botao "X" que fecha o banner de upload (flashbar AWS Cloudscape).
+# O banner de sucesso do Playground contem "Uploading files" + "Upload complete" e PERSISTE na
+# tela; entre lotes ele e fechado para zerar o estado (senao pre_active=True mata o fallback de
+# verde do proximo lote). Usado por dismiss_upload_banner em playground_upload.py.
+UPLOAD_BANNER_DISMISS_ARIA = [
+    "Close",
+    "Dismiss",
+    "Dismiss message",
+    "Close message",
+    "Fechar",
+    "Descartar",
+    "Fechar mensagem",
+]
+
 FILES_TAB_TEXTS = [
     "Files",
     "Arquivos",

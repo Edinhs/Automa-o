@@ -23,6 +23,7 @@ from app.services.playwright.playground_workspace import open_workspace, wait_fo
 from app.services.playwright.selectors import (
     CHOOSE_FILES_TEXTS,
     UPLOAD_ACTIVE_TEXTS,
+    UPLOAD_BANNER_DISMISS_ARIA,
     UPLOAD_COMPLETE_TEXTS,
     UPLOAD_ERROR_TEXTS,
     UPLOAD_FILES_TEXTS,
@@ -910,6 +911,96 @@ def uploaded_results(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+# Tempos da garantia de estado neutro entre lotes (banner de sucesso persiste e contem
+# "Uploading files"; precisa sumir antes do snapshot pre-clique para pre_active=False).
+NEUTRAL_PASSIVE_WAIT_SECONDS = 3
+NEUTRAL_AFTER_DISMISS_WAIT_SECONDS = 4
+
+
+def dismiss_upload_banner(page, log: Callable) -> bool:
+    """Best-effort: fecha o banner de upload (flashbar AWS Cloudscape) para zerar o estado entre lotes.
+
+    Ancora pelo texto do banner ("Upload complete"/"Uploading files") e clica o botao de fechar (X)
+    dentro do mesmo container; fallback por aria-label de dismiss comuns. Nunca levanta.
+    Retorna True se algum controle de fechar foi clicado.
+    """
+    close_pattern = re.compile("|".join(re.escape(t) for t in UPLOAD_BANNER_DISMISS_ARIA), re.IGNORECASE)
+    # 1) Botao de fechar DENTRO do container do banner (mais cirurgico).
+    for text in list(UPLOAD_COMPLETE_TEXTS) + list(UPLOAD_ACTIVE_TEXTS):
+        try:
+            marker = page.get_by_text(text, exact=False)
+            if not marker.count():
+                continue
+            container = marker.first.locator("xpath=ancestor-or-self::*[.//button][1]")
+            buttons = container.locator("button")
+            count = min(buttons.count(), 6)
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                btn = buttons.nth(index)
+                if not btn.is_visible(timeout=300):
+                    continue
+                label = f"{btn.get_attribute('aria-label') or ''} {btn.get_attribute('title') or ''}"
+                if close_pattern.search(label):
+                    btn.click(timeout=1500)
+                    log("info", "Banner de upload fechado (X) para zerar o estado entre lotes.")
+                    return True
+            except Exception:
+                continue
+    # 2) Fallback: botoes de dismiss/close por aria-label/classe (Cloudscape).
+    selectors = [f"[aria-label='{label}']" for label in UPLOAD_BANNER_DISMISS_ARIA]
+    selectors.append("button[class*='dismiss']")
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            if loc.count() and loc.first.is_visible(timeout=300):
+                loc.first.click(timeout=1500)
+                log("info", "Banner de upload fechado (fallback de dismiss) para zerar o estado entre lotes.")
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def ensure_neutral_upload_state(page, log: Callable, should_continue: Callable[[], bool] | None = None) -> bool:
+    """Garante o estado neutro ANTES do snapshot pre-clique deste lote.
+
+    O banner de sucesso do Playground contem "Uploading files" (= UPLOAD_ACTIVE_TEXTS) e PERSISTE
+    na tela apos concluir. Se ele continuar visivel quando o proximo lote captura o pre_click_body,
+    pre_active=True e o fallback de verde (Sinal B em wait_for_batch_sent) morre -> lotes tardios
+    falham mesmo subindo. Faz uma espera curta (caso o Playground limpe sozinho) e, se persistir,
+    fecha o banner (X) para alcancar o neutro. Best-effort: nunca levanta. Retorna True se neutro.
+    """
+    if not _body_has_active(page_text(page).lower()):
+        return True  # ja neutro (tipico do 1o lote)
+
+    # Espera passiva curta: alguns fluxos limpam o banner ao iniciar o proximo lote.
+    deadline = time.monotonic() + NEUTRAL_PASSIVE_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        check_continue(should_continue)
+        if not _body_has_active(page_text(page).lower()):
+            return True
+        time.sleep(0.4)
+
+    # Banner persistente: fecha o X para zerar o estado.
+    dismissed = dismiss_upload_banner(page, log)
+    deadline = time.monotonic() + NEUTRAL_AFTER_DISMISS_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        check_continue(should_continue)
+        if not _body_has_active(page_text(page).lower()):
+            log("info", "Estado neutro alcancado entre lotes.", metadata={"dismiss_used": dismissed})
+            return True
+        time.sleep(0.4)
+
+    log(
+        "warning",
+        "Banner de upload do lote anterior persiste; pre_active pode bloquear o fallback de verde neste lote.",
+        metadata={"dismiss_used": dismissed},
+    )
+    return False
+
+
 def upload_batch(
     page,
     batch: list[dict[str, Any]],
@@ -944,6 +1035,11 @@ def upload_batch(
     choose_files(page, paths, log)
     check_continue(should_continue)
     wait_for_selected_files(page, batch, log, should_continue=should_continue)
+
+    # Estado neutro entre lotes: o banner verde de sucesso do lote anterior contem "Uploading
+    # files" e persiste; se ainda estiver na tela aqui, pre_active=True mata o fallback de verde
+    # deste lote (causa das falhas em lotes tardios). Garante o neutro antes do snapshot.
+    ensure_neutral_upload_state(page, log, should_continue=should_continue)
 
     # Snapshot do body ANTES do clique: textos de conclusao pre-existentes nao contam
     # como evidencia de que ESTE lote iniciou o envio.
