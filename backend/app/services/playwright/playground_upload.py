@@ -619,17 +619,18 @@ def wait_for_batch_complete(page, log: Callable, should_continue: Callable[[], b
             raise UploadFailed("uploading error")
         has_active = any(text.lower() in body for text in UPLOAD_ACTIVE_TEXTS)
         has_complete = any(text.lower() in body for text in UPLOAD_COMPLETE_TEXTS)
-        if has_active:
+        # Prioridade para o status de conclusao (evita loop se o titulo continuar sendo "Uploading files")
+        if has_complete:
+            log("info", "Lote concluido com sucesso (texto de conclusao detectado).")
+            return
+        elif has_active:
             saw_active = True
             absent_since = None
-        elif has_complete:
-            log("info", "Ultimo lote concluido (texto de conclusao detectado).")
-            return
         elif saw_active:
             if absent_since is None:
                 absent_since = time.monotonic()
             elif time.monotonic() - absent_since >= UPLOAD_COMPLETE_STABLE_SECONDS:
-                log("info", "Ultimo lote concluido (indicador de envio desapareceu).")
+                log("info", "Lote concluido com sucesso (indicador de envio desapareceu).")
                 return
         time.sleep(1.0)
     log("warning", "Nao foi possivel confirmar a conclusao do ultimo lote no tempo limite; seguindo para fechar o navegador.")
@@ -963,15 +964,14 @@ def upload_batch(
     finally:
         capture.stop()
 
+    log("info", "Aguardando a tela verde de conclusao do lote...")
+    wait_for_batch_complete(page, log, should_continue=should_continue)
+
     if is_last_batch:
-        # Decisao do usuario: fecha o Chromium imediatamente apos confirmacao do envio,
-        # sem aguardar conclusao total. O monitoramento posterior trata arquivos nao-Ready.
-        log("info", "Ultimo lote confirmado como enviado; fechando o Chromium sem esperar conclusao.")
+        time.sleep(3)
+        log("info", "Confirmacao de upload recebida. Todos os lotes foram enviados com sucesso.")
     else:
-        # Entre lotes: janela curta vigiando o vermelho antes de seguir ao proximo lote.
-        if watch_for_error_window(page, POST_SENT_ERROR_WATCH_SECONDS, should_continue=should_continue):
-            raise UploadFailed("uploading error")
-        log("info", "Lote enviado; seguindo ao proximo lote na mesma tela.")
+        log("info", "Lote concluido com sucesso; seguindo ao proximo lote na mesma tela.")
     return uploaded_results(batch)
 
 
@@ -1254,6 +1254,9 @@ def upload_files_to_workspace(
                     "Continuando com proximo lote na mesma sessao do Chromium apos espera de 5 segundos.",
                     metadata={"next_batch": int(batches[index][0].get("batch_number") or (index + 1))},
                 )
+        if browser:
+            close_browser(browser, log, "Todos os lotes enviados. Fechando o navegador.")
+            browser = None
         return {
             "automation_id": payload.get("automation_id"),
             "workspace_id": payload.get("workspace_id"),
