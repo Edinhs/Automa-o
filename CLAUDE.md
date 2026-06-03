@@ -72,6 +72,6 @@ The corporate release is offline and tightly sanitized — see `RELEASE_POLICY.m
 - `backend/app/models/` — SQLAlchemy models; `backend/app/schemas/` — Pydantic schemas
 - `backend/app/services/` — `agent_tasks.py`, `automation_staging.py`, `schedule_runner.py`, `audit.py`, `playwright/`, `integrations/graph_client.py` (MS Graph / Teams)
 - `backend/app/core/` — `config.py` (settings + environment ContextVar), `security.py`, `timezone.py`
-- `backend/app/cli/` — `local_agent.py`, `create_admin_user.py`, `purge_legacy_reports.py`
+- `backend/app/cli/` — `local_agent.py`, `create_admin_user.py`, `purge_legacy_reports.py`, `purge_staging.py` (retenção opt-in de staging via `STAGING_RETENTION_DAYS`)
 - `scripts/` — `start_hidden_service.ps1` (hides windows, redirects logs), `build_release_empty_db.py`
 - `.agy/` — Antigravity agent/skill definitions (reference docs, not executable)

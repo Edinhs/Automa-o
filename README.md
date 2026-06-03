@@ -48,7 +48,7 @@ A pasta raiz do projeto possui arquivos de lote (`.bat`) para facilitar o contro
 ## 📊 Guia de Uso das Funcionalidades
 
 ### 1. Painel Executivo (Aba Home)
-* **Monitoramento Compacto**: Permite acompanhar os principais indicadores operacionais (Uploads hoje, Taxa de Sucesso, Erros Resolvidos).
+* **Monitoramento Compacto**: Permite acompanhar os principais indicadores operacionais (Uploads, Taxa de Sucesso, Erros Resolvidos).
 * **Grade Dinâmica**: Clicando no botão **⚙️ Personalizar Dashboard** no canto superior direito, você pode arrastar qualquer cartão métrico, gráfico de Pizza de erros resolvidos, ou tabelas para mudar a ordem, além de redimensionar a largura lateral usando os botões `+/-`. O layout personalizado é gravado automaticamente no seu navegador.
 * **Erros Resolvidos**: O gráfico em pizza demonstra a eficiência de resolução de problemas, refletindo imediatamente as ações manuais feitas sobre arquivos com falha.
 

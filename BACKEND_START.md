@@ -63,6 +63,24 @@ O agente usa `AGENT_SHARED_TOKEN` para acessar `/api/agents/*`. O mesmo valor de
 - `DEVELOPER_REPORTS_PATH=./data/developer/reports`
 - `PROFILE_PHOTOS_PATH=./data/profile_photos`
 - `DEVELOPER_PROFILE_PHOTOS_PATH=./data/developer/profile_photos`
+- `SQLITE_BUSY_TIMEOUT_MS=15000` tempo de espera por lock antes de "database is locked"
+- `STAGING_RETENTION_DAYS=0` retencao opt-in das pastas de staging (0 = desativado)
+
+### Integracao Microsoft Teams (opcional, opt-in)
+
+Vazias por padrao — a integracao so liga quando preenchidas:
+
+- `MS_GRAPH_TENANT_ID=`
+- `MS_GRAPH_CLIENT_ID=`
+- `MS_GRAPH_CLIENT_SECRET=`
+- `MS_GRAPH_SCOPE=https://graph.microsoft.com/.default`
+- `MS_GRAPH_SENDER_USER=`
+- `MS_GRAPH_TEAMS_TEAM_ID=`
+- `MS_GRAPH_TEAMS_CHANNEL_ID=`
+- `MS_GRAPH_TEAMS_WEBHOOK_URL=`
+- `MS_GRAPH_TIMEOUT_SECONDS=20`
+
+Tabelas: `teams_channels` (webhooks/destinos) e `teams_report_schedules` (agendamento de envio de relatorios). Codigo em `app/routers/teams.py`, `app/models/teams.py` e `app/services/integrations/graph_client.py`.
 
 ## Separacao entre modos
 
@@ -86,6 +104,8 @@ As tabelas centrais atuais sao:
 - `schedules`
 - `integration_connections`
 - `integration_deliveries`
+- `teams_channels`
+- `teams_report_schedules`
 
 Historico de execucoes e derivado de `agent_tasks.started_at`, com apoio de `workspace_files` e `execution_logs`. Nao existe uma tabela separada `automation_executions` nesta versao.
 
@@ -123,6 +143,7 @@ Autenticados por Bearer JWT:
 - `/api/schedules`
 - `/api/integrations`
 - `/api/executions`
+- `/api/teams`
 
 Autenticados por Bearer JWT ou `X-Agent-Token` interno:
 

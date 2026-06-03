@@ -350,25 +350,91 @@ def read_all_pages_statuses(
     return merged
 
 
+def read_live_row(row) -> dict[str, str]:
+    """Le nome/status/texto da LINHA viva mapeando pelas colunas Name e Status do cabecalho.
+
+    Usado para casar a linha EXATA do arquivo (e nao uma substring) e para revalidar o status
+    no momento do delete. Evita o bug de apagar a linha errada (tipicamente a primeira da tabela)
+    quando nomes se sobrepoem.
+    """
+    try:
+        data = row.evaluate(
+            """
+            (el) => {
+              const clean = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+              const table = el.closest('table');
+              let headers = [];
+              if (table) {
+                headers = Array.from(table.querySelectorAll('thead th, thead [role=\"columnheader\"], tr:first-child th'))
+                  .map((h) => clean(h.innerText || h.textContent || ''));
+              }
+              const cells = Array.from(el.querySelectorAll('td, th, [role=\"cell\"], [role=\"gridcell\"]'))
+                .map((c) => clean(c.innerText || c.textContent || ''));
+              const idx = (aliases) => {
+                const low = headers.map((h) => h.toLowerCase());
+                for (let i = 0; i < low.length; i++) {
+                  if (aliases.some((a) => low[i].includes(a))) return i;
+                }
+                return -1;
+              };
+              const nameIdx = idx(['name', 'nome']);
+              const statusIdx = idx(['status']);
+              return {
+                name: nameIdx >= 0 && nameIdx < cells.length ? cells[nameIdx] : (cells[0] || ''),
+                status: statusIdx >= 0 && statusIdx < cells.length ? cells[statusIdx] : '',
+                text: clean(el.innerText || el.textContent || ''),
+              };
+            }
+            """
+        )
+        if isinstance(data, dict):
+            return {
+                "name": clean_text(data.get("name") or ""),
+                "status": clean_text(data.get("status") or ""),
+                "text": clean_text(data.get("text") or ""),
+            }
+    except Exception:
+        pass
+    return {"name": "", "status": "", "text": ""}
+
+
+def live_row_status(row) -> str:
+    """Status normalizado (Ready/Error/Pending/Processing/Unknown) da LINHA viva."""
+    data = read_live_row(row)
+    return normalize_status(data.get("status") or data.get("text") or "")
+
+
 def find_file_row(page, file_name: str):
-    candidates = [
-        page.locator("table tbody tr").filter(has_text=file_name),
-        page.locator("[role='row']").filter(has_text=file_name),
-    ]
-    for locator in candidates:
+    """Retorna a LINHA cujo Name casa EXATAMENTE com file_name (nunca uma substring).
+
+    O filtro has_text apenas estreita o DOM; a selecao final exige igualdade exata da coluna
+    Name. Sem isso, '.first' acabava retornando a primeira linha da tabela e apagava o arquivo
+    errado (inclusive arquivos Ready).
+    """
+    target = clean_text(file_name)
+    for selector in ("table tbody tr", "[role='row']"):
+        locator = page.locator(selector).filter(has_text=file_name)
         try:
             # Espera de até 6s para a linha do arquivo ficar visível, mitigando flutuações do Ajax
             locator.first.wait_for(state="visible", timeout=6000)
-            count = min(locator.count(), 5)
+            count = min(locator.count(), 20)
         except Exception:
             count = 0
+        visible_rows = []
         for index in range(count):
             row = locator.nth(index)
             try:
                 if row.is_visible(timeout=1000):
-                    return row
+                    visible_rows.append(row)
             except Exception:
                 continue
+        # 1) Match exato pela coluna Name (cirurgico).
+        for row in visible_rows:
+            if read_live_row(row).get("name") == target:
+                return row
+        # 2) Fallback seguro: so quando o filtro deixou UMA candidata (sem ambiguidade).
+        if len(visible_rows) == 1:
+            return visible_rows[0]
     return None
 
 
@@ -544,6 +610,12 @@ def delete_one_with_verify(
             log("info", f"'{target}' nao esta na tabela (nada para deletar).")
             return True
         last_row = row
+        # Trava de seguranca: relê o status DA PROPRIA linha imediatamente antes de clicar.
+        # Se estiver Ready, ABORTA (nunca apaga um arquivo pronto, mesmo que tenha entrado em
+        # 'deletable' por leitura de status equivocada a montante).
+        if live_row_status(row) == "Ready":
+            log("warning", f"Delete ABORTADO: a linha de '{target}' esta Ready (trava de seguranca).")
+            return False
         if not click_row_delete_control(row, log, target):
             return False
         click_delete_confirm(page)  # melhor esforco: algumas UIs deletam sem modal de confirmacao

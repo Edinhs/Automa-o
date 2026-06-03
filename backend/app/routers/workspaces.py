@@ -78,7 +78,16 @@ def workspace_out(workspace: Workspace) -> dict:
 
 @router.get("")
 def list_workspaces(db: Session = Depends(get_db)):
-    return [workspace_out(ws) for ws in db.query(Workspace).filter(Workspace.is_deleted == False).all()]
+    from app.models.automation import Automation
+    results = []
+    for ws in db.query(Workspace).filter(Workspace.is_deleted == False).all():
+        out = workspace_out(ws)
+        out["automations"] = db.query(Automation).filter(
+            Automation.workspace_id == ws.id,
+            Automation.is_deleted == False
+        ).count()
+        results.append(out)
+    return results
 
 @router.get("/external-users")
 def list_external_users(db: Session = Depends(get_db)):
@@ -166,13 +175,21 @@ def create_workspace(data: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(ws)
     create_log(db, "info", f"Workspace created: {ws.name}", "workspace", ws.id)
-    return workspace_out(ws)
+    out = workspace_out(ws)
+    out["automations"] = 0
+    return out
 
 @router.get("/{id}")
 def get_workspace(id: int, db: Session = Depends(get_db)):
     ws = db.query(Workspace).filter(Workspace.id == id, Workspace.is_deleted == False).first()
     if not ws: raise HTTPException(404)
-    return ws
+    out = workspace_out(ws)
+    from app.models.automation import Automation
+    out["automations"] = db.query(Automation).filter(
+        Automation.workspace_id == ws.id,
+        Automation.is_deleted == False
+    ).count()
+    return out
 
 @router.put("/{id}")
 def update_workspace(id: int, data: dict, db: Session = Depends(get_db)):
@@ -183,7 +200,13 @@ def update_workspace(id: int, data: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(ws)
     create_log(db, "info", "Workspace edited", "workspace", ws.id)
-    return workspace_out(ws)
+    out = workspace_out(ws)
+    from app.models.automation import Automation
+    out["automations"] = db.query(Automation).filter(
+        Automation.workspace_id == ws.id,
+        Automation.is_deleted == False
+    ).count()
+    return out
 
 @router.delete("/{id}")
 def delete_workspace(id: int, db: Session = Depends(get_db)):

@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends
+import csv
+import io
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.execution import ExecutionLog
@@ -7,6 +10,9 @@ from fastapi.responses import PlainTextResponse
 from app.core.timezone import sao_paulo_utc_iso
 
 router = APIRouter()
+
+# Cap defensivo para nao carregar a tabela inteira em memoria (risco de OOM).
+MAX_EXPORT_ROWS = 50000
 
 
 def log_out(log: ExecutionLog) -> dict:
@@ -26,8 +32,19 @@ def log_out(log: ExecutionLog) -> dict:
 
 
 @router.get("")
-def list_logs(db: Session = Depends(get_db)):
-    return [log_out(log) for log in db.query(ExecutionLog).order_by(ExecutionLog.created_at.desc()).limit(100).all()]
+def list_logs(
+    db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+):
+    logs = (
+        db.query(ExecutionLog)
+        .order_by(ExecutionLog.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [log_out(log) for log in logs]
 
 @router.post("")
 def post_log(data: dict, db: Session = Depends(get_db)):
@@ -47,11 +64,27 @@ def post_log(data: dict, db: Session = Depends(get_db)):
     return log_out(log)
 
 @router.get("/export")
-def export_logs(db: Session = Depends(get_db)):
-    logs = db.query(ExecutionLog).all()
+def export_logs(
+    db: Session = Depends(get_db),
+    limit: int = Query(default=MAX_EXPORT_ROWS, ge=1, le=MAX_EXPORT_ROWS),
+    offset: int = Query(default=0, ge=0),
+):
+    logs = (
+        db.query(ExecutionLog)
+        .order_by(ExecutionLog.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     create_log(db, "info", "Exported logs", "system")
-    
-    csv_data = "id,level,message,created_at\n"
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["id", "level", "message", "created_at"])
     for log in logs:
-        csv_data += f"{log.id},{log.level},{log.message},{sao_paulo_utc_iso(log.created_at)}\n"
-    return PlainTextResponse(csv_data, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=logs.csv"})
+        writer.writerow([log.id, log.level, log.message, sao_paulo_utc_iso(log.created_at)])
+    return PlainTextResponse(
+        buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=logs.csv"},
+    )

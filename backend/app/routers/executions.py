@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 import unicodedata
 from datetime import datetime
@@ -9,6 +8,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.serialization import parse_json_object
 from app.core.timezone import parse_sao_paulo_to_utc_naive, sao_paulo_utc_iso
 from app.db.session import get_db
 from app.models.agent import AgentTask
@@ -48,19 +48,6 @@ STATUS_FILTERS = {
 SUCCESS_FILE_STATUSES = {"ready", "uploaded"}
 ERROR_FILE_STATUSES = {"failed", "manual_review"}
 ERROR_PLAYGROUND_STATUSES = {"error", "timeout", "notfound"}
-
-
-def parse_json_object(raw: str | None) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        try:
-            value = ast.literal_eval(raw)
-        except Exception:
-            return {}
-    return value if isinstance(value, dict) else {}
 
 
 def parse_datetime(value: str | None) -> datetime | None:
@@ -495,3 +482,37 @@ def delete_execution(id: int, db: Session = Depends(get_db)):
     from app.services.audit import create_log
     create_log(db, "warning", f"Execution marked as deleted: {task.id}", "agent_task", task.id, task_id=task.id)
     return {"status": "deleted"}
+
+
+@router.post("/{id}/open-folder")
+def open_execution_folder(id: int, db: Session = Depends(get_db)):
+    task = db.query(AgentTask).filter(AgentTask.id == id, AgentTask.is_deleted == False).first()
+    if not task:
+        raise HTTPException(404, detail="Execução não encontrada")
+    
+    payload = task_payload(task)
+    temp_folder_path = payload.get("temp_folder_path")
+    if not temp_folder_path:
+        copy_stats = payload.get("copy_stats") or {}
+        temp_folder_path = copy_stats.get("staging_dir")
+        if not temp_folder_path:
+            files = task_file_refs(task, payload)
+            if files:
+                first_file = files[0]
+                temp_path = first_file.get("temp_path") or first_file.get("path")
+                if temp_path:
+                    from pathlib import Path
+                    temp_folder_path = str(Path(temp_path).parent)
+    
+    if not temp_folder_path:
+        raise HTTPException(400, detail="Caminho temporário não encontrado nesta execução")
+    
+    from app.services.agent_tasks import enqueue_task
+    enqueue_task(
+        db=db,
+        task_type="open_temp_folder",
+        payload={"temp_folder_path": temp_folder_path},
+        created_by_id=task.created_by_id
+    )
+    return {"message": "Ação solicitada. A pasta temporária será aberta no agente local."}
+

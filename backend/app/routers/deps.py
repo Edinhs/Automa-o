@@ -15,10 +15,12 @@ optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_e
 LOCAL_USER_NETWORK_ID = "TA25413"
 LOCAL_USER_EMAIL = "TA25413@stellantis.com"
 LOCAL_USER_NAME = "Ederson Siqueira dos Santos"
-# Hash bcrypt para "98Edinho" — gerado com bcrypt.hashpw, verificado com checkpw=True.
-# Nunca armazene a senha em texto puro. Para gerar novo hash:
-#   python -c "import bcrypt; print(bcrypt.hashpw(b'98Edinho', bcrypt.gensalt()).decode())"
-LOCAL_USER_PASSWORD_HASH = "$2b$12$N0PN52pCQOdXNK0x/uB/Ce7H9V00gqeyC5iZRxsqcNhM.FsFIH56i"
+# Hash bcrypt do admin local. Preferir env LOCAL_ADMIN_PASSWORD_HASH para nao versionar
+# o segredo; o default abaixo permanece como fallback de compatibilidade do release offline.
+# Para gerar novo hash:
+#   python -c "import bcrypt; print(bcrypt.hashpw(b'SUA_SENHA', bcrypt.gensalt()).decode())"
+_DEFAULT_LOCAL_USER_PASSWORD_HASH = "$2b$12$N0PN52pCQOdXNK0x/uB/Ce7H9V00gqeyC5iZRxsqcNhM.FsFIH56i"
+LOCAL_USER_PASSWORD_HASH = settings.LOCAL_ADMIN_PASSWORD_HASH or _DEFAULT_LOCAL_USER_PASSWORD_HASH
 
 
 def get_or_create_local_user(db: Session) -> User:

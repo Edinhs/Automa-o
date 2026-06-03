@@ -45,13 +45,14 @@ SAME_SESSION_RECOVERY_ATTEMPTS = 2
 UPLOAD_COMPLETE_STABLE_SECONDS = 3
 # Tempo maximo aguardando o lote iniciar o envio (verde "Uploading Files") ou dar erro
 # (vermelho "Upload Error") apos clicar no Upload Files final.
-BATCH_SENT_TIMEOUT_SECONDS = 30
+# Default afinavel por env (BATCH_SENT_TIMEOUT_SECONDS) para workspaces mais lentos.
+BATCH_SENT_TIMEOUT_SECONDS = max(1, int(settings.BATCH_SENT_TIMEOUT_SECONDS))
 # Janela curta apos o verde "Uploading Files" durante a qual ainda vigiamos o aparecimento
 # de "Upload Error" (o erro costuma surgir no ultimo arquivo) antes de seguir ao proximo lote.
 POST_SENT_ERROR_WATCH_SECONDS = 5
 # Tempo maximo aguardando a conclusao total do ultimo lote antes de fechar o navegador,
 # para nao truncar o envio do ultimo conjunto de arquivos.
-FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS = 180
+FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS = max(1, int(settings.FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS))
 
 
 def check_continue(should_continue: Callable[[], bool] | None) -> None:

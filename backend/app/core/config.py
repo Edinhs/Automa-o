@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     OPERATIONAL_BROWSER_SESSION_PATH: str = ""
     DEVELOPER_BROWSER_SESSION_PATH: str = "./data/developer/browser_session"
     AGENT_SHARED_TOKEN: str = "local-dev-agent-token"
+    # Hash bcrypt do admin local (AUTH_DISABLED). Vazio = usa o default historico do codigo.
+    # Defina via env para nao versionar o segredo: LOCAL_ADMIN_PASSWORD_HASH=...
+    LOCAL_ADMIN_PASSWORD_HASH: str = ""
     AGENT_POLL_INTERVAL_SECONDS: int = 5
     PLAYWRIGHT_HEADLESS: bool = False
     MANUAL_LOGIN_TIMEOUT_MINUTES: int = 10
@@ -93,6 +96,16 @@ class Settings(BaseSettings):
     MS_GRAPH_TEAMS_CHANNEL_ID: str = ""
     MS_GRAPH_TEAMS_WEBHOOK_URL: str = ""
     MS_GRAPH_TIMEOUT_SECONDS: int = 20
+    # SQLite: tempo (ms) que uma conexao aguarda um lock antes de "database is locked".
+    # Agente + scheduler + UI competem pelo mesmo arquivo; valor mais alto reduz falhas.
+    SQLITE_BUSY_TIMEOUT_MS: int = 15000
+    # RPA upload: confirmacao de envio de cada lote e conclusao do lote final.
+    # Override por payload da automacao quando o workspace for mais lento.
+    BATCH_SENT_TIMEOUT_SECONDS: int = 30
+    FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS: int = 180
+    # Retencao opt-in das pastas de staging (temp). 0 = desativado (comportamento atual:
+    # a automacao NAO apaga o staging de proposito). >0 habilita o CLI purge_staging.
+    STAGING_RETENTION_DAYS: int = 0
 
     class Config:
         env_file = ".env"

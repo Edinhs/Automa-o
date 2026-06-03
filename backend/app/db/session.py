@@ -2,7 +2,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app.core.config import database_url_for_environment, resolve_backend_path
+from app.core.config import database_url_for_environment, resolve_backend_path, settings
 import os
 
 
@@ -29,7 +29,7 @@ def _create_engine(database_url: str):
         def _set_sqlite_pragmas(dbapi_conn, connection_record):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute(f"PRAGMA busy_timeout={int(settings.SQLITE_BUSY_TIMEOUT_MS)}")
             cursor.close()
     return created_engine
 

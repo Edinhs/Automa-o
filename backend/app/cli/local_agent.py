@@ -40,6 +40,7 @@ OFFICIAL_TASK_TYPES = {
     "upload_files_to_workspace",
     "monitor_workspace_files_status",
     "convert_and_retry_file",
+    "open_temp_folder",
 }
 PLAYWRIGHT_TASK_TYPES = set(OFFICIAL_TASK_TYPES)
 FOLDER_REPORT_SOURCE = "folder_monitoring_detection"
@@ -287,7 +288,9 @@ def checkpoint_uploaded_batch(
                 metadata={"batch_number": batch_number, "batch_folder_path": batch_folder_path, "error": str(exc)},
             )
             if attempt < BATCH_CHECKPOINT_ATTEMPTS:
-                time.sleep(1)
+                # Backoff exponencial com teto: 1s, 2s, 4s... ate 30s. Evita martelar o
+                # backend logo apos um hiccup de rede/lock momentaneo.
+                time.sleep(min(30, 2 ** (attempt - 1)))
     raise ManualReviewRequired(
         f"Lote {batch_number} pode ter sido enviado ao Playground, mas o checkpoint nao foi persistido; "
         "nenhum lote posterior sera enviado ate revisao."
@@ -1050,6 +1053,22 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
     complete_task(session, task_id, result)
 
 
+def process_open_temp_folder(session: requests.Session, task: dict[str, Any], payload: dict[str, Any], user_id: Optional[int], log) -> None:
+    task_id = task["id"]
+    temp_folder_path = payload.get("temp_folder_path")
+    if not temp_folder_path:
+        raise ValueError("Caminho temporario nao especificado no payload.")
+    
+    path = Path(temp_folder_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Pasta temporaria nao existe no disco: {temp_folder_path}")
+    
+    import subprocess
+    subprocess.Popen(f'explorer "{path}"')
+    log("info", f"Pasta temporaria aberta no Windows Explorer: {temp_folder_path}")
+    complete_task(session, task_id, {"status": "opened", "temp_folder_path": temp_folder_path})
+
+
 def process_task(session: requests.Session, task: dict[str, Any], agent_id: Optional[int]) -> None:
     task_id = task["id"]
     task_type = task.get("task_type")
@@ -1081,6 +1100,8 @@ def process_task(session: requests.Session, task: dict[str, Any], agent_id: Opti
             process_monitor(session, task, payload, user_id, log)
         elif task_type == "convert_and_retry_file":
             process_convert_retry(session, task, payload, user_id, log)
+        elif task_type == "open_temp_folder":
+            process_open_temp_folder(session, task, payload, user_id, log)
         log("info", "Task finalizada pelo agente.")
     except AutomationStopped as exc:
         message = str(exc) or "Automacao parada pelo usuario."

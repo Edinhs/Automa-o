@@ -26,6 +26,9 @@ env/
 node_modules/
 .npm/
 
+# Frontend debug/format artifacts (never ship)
+*.formatted.js
+
 # Browser/runtime binaries and test artifacts
 backend/ms-playwright/
 ms-playwright/

@@ -53,6 +53,8 @@ FORBIDDEN_FILE_NAMES = {
     "mockData.js",
 }
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pyc", ".zip", ".rar", ".7z"}
+# Sufixos compostos (nao capturados por Path.suffix): artefatos de debug/format do frontend.
+FORBIDDEN_NAME_SUFFIXES = (".formatted.js",)
 FORBIDDEN_RELATIVE_PREFIXES = {
     "src/",
     "backend/tests/",
@@ -69,7 +71,12 @@ def ignore_runtime(dir_path: str, names: list[str]) -> set[str]:
     ignored: set[str] = set()
     for name in names:
         path = Path(dir_path) / name
-        if name in FORBIDDEN_PARTS or name in FORBIDDEN_FILE_NAMES or path.suffix.lower() in FORBIDDEN_SUFFIXES:
+        if (
+            name in FORBIDDEN_PARTS
+            or name in FORBIDDEN_FILE_NAMES
+            or path.suffix.lower() in FORBIDDEN_SUFFIXES
+            or name.lower().endswith(FORBIDDEN_NAME_SUFFIXES)
+        ):
             ignored.add(name)
     return ignored
 
@@ -108,6 +115,7 @@ def forbidden_entries(release_dir: Path) -> list[str]:
             parts & FORBIDDEN_PARTS
             or path.name in FORBIDDEN_FILE_NAMES
             or path.suffix.lower() in FORBIDDEN_SUFFIXES
+            or path.name.lower().endswith(FORBIDDEN_NAME_SUFFIXES)
             or relative in FORBIDDEN_RELATIVE_PATHS
             or any(relative.startswith(prefix) for prefix in FORBIDDEN_RELATIVE_PREFIXES)
         ):

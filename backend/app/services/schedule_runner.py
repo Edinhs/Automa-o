@@ -358,16 +358,138 @@ def run_due_schedules_for_all_environments(now: datetime | None = None) -> int:
     return triggered
 
 
+def run_due_report_schedule(db: Session, schedule: Any, now: datetime) -> None:
+    from app.routers.teams import compute_report_next_run, send_adaptive_card_to_teams, build_report_adaptive_card
+    from app.routers.reports import persist_report
+    from app.models.teams import TeamsChannel
+    
+    channel = db.query(TeamsChannel).filter(TeamsChannel.id == schedule.channel_id, TeamsChannel.is_deleted == False).first()
+    if not channel:
+        schedule.status = "error"
+        db.commit()
+        create_log(db, "error", f"Agendamento de relatório '{schedule.name}' falhou: Canal do Teams não encontrado.", "report_schedule", schedule.id)
+        return
+        
+    try:
+        freq = str(schedule.frequency_type).lower()
+        if freq == "daily":
+            start_date = now - timedelta(days=1)
+        elif freq == "weekly":
+            start_date = now - timedelta(days=7)
+        elif freq == "monthly":
+            start_date = now - timedelta(days=30)
+        else:
+            start_date = now - timedelta(days=1)
+            
+        filters = {
+            "start": start_date,
+            "end": now,
+            "automation_id": None,
+            "workspace_id": None,
+            "status": None,
+            "source_task_id": None
+        }
+        
+        # Persistir relatório
+        report = persist_report(
+            db=db,
+            report_type=schedule.report_type,
+            file_format=schedule.file_format,
+            filters=filters,
+            generated_by_id=None,
+            generation_trigger="automatic",
+            source_task_id=None
+        )
+        
+        # Enviar Teams
+        download_url = f"http://localhost:8000/api/reports/{report.id}/download"
+        
+        period_start_str = report.period_start.strftime("%d/%m/%Y") if report.period_start else ""
+        period_end_str = report.period_end.strftime("%d/%m/%Y") if report.period_end else ""
+        period_label = f"{period_start_str} até {period_end_str}" if period_start_str and period_end_str else "Completo"
+        
+        card = build_report_adaptive_card(
+            report_name=report.name or f"Relatório #{report.id}",
+            report_type=schedule.report_type,
+            file_format=schedule.file_format,
+            generated_at=now.strftime("%d/%m/%Y %H:%M:%S"),
+            download_url=download_url,
+            period_label=period_label
+        )
+        
+        send_adaptive_card_to_teams(channel.webhook_url, card)
+        
+        schedule.last_run_at = now
+        if freq == "once":
+            schedule.status = "completed"
+            schedule.next_run_at = None
+        else:
+            schedule.next_run_at = compute_report_next_run(schedule, now + timedelta(seconds=1))
+            
+        db.commit()
+        
+        create_log(
+            db,
+            "info",
+            f"Relatório agendado '{schedule.name}' gerado e enviado para {channel.name}",
+            "report_schedule",
+            schedule.id,
+            metadata={"report_id": report.id, "channel_id": channel.id}
+        )
+        
+    except Exception as exc:
+        schedule.status = "error"
+        db.commit()
+        create_log(db, "error", f"Falha ao executar agendamento de relatório '{schedule.name}': {str(exc)}", "report_schedule", schedule.id)
+
+
+def run_due_report_schedules_once(now: datetime | None = None, db: Session | None = None) -> int:
+    from app.models.teams import TeamsReportSchedule
+    own_session = db is None
+    db = db or SessionLocal()
+    triggered = 0
+    now = to_sao_paulo_naive(now) or now_sao_paulo_naive()
+    try:
+        schedules = db.query(TeamsReportSchedule).filter(
+            TeamsReportSchedule.is_deleted == False,
+            TeamsReportSchedule.status == "active",
+            TeamsReportSchedule.next_run_at.isnot(None),
+            TeamsReportSchedule.next_run_at <= now
+        ).all()
+        
+        for s in schedules:
+            run_due_report_schedule(db, s, now)
+            triggered += 1
+        return triggered
+    finally:
+        if own_session:
+            db.close()
+
+
+def run_due_report_schedules_for_all_environments(now: datetime | None = None) -> int:
+    triggered = 0
+    for environment in SUPPORTED_ENVIRONMENTS:
+        with environment_scope(environment):
+            db = session_for_environment(environment)
+            try:
+                triggered += run_due_report_schedules_once(now, db)
+            finally:
+                db.close()
+    return triggered
+
+
 async def _runner_loop() -> None:
     interval = max(int(settings.SCHEDULE_POLL_INTERVAL_SECONDS or 5), 1)
     while True:
         try:
             await asyncio.to_thread(run_due_schedules_for_all_environments)
+            await asyncio.to_thread(run_due_report_schedules_for_all_environments)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             print(f"[schedule_runner] {exc}", flush=True)
         await asyncio.sleep(interval)
+
 
 
 def start_schedule_runner() -> None:

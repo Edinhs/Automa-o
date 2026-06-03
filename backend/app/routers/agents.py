@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 from datetime import datetime
 from typing import Any, Optional
@@ -10,6 +9,7 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.serialization import parse_json_object
 from app.db.session import get_db
 from app.models.agent import AgentTask, LocalAgent
 from app.models.automation import Automation
@@ -29,6 +29,7 @@ OFFICIAL_TASK_TYPES = {
     "upload_files_to_workspace",
     "monitor_workspace_files_status",
     "convert_and_retry_file",
+    "open_temp_folder",
 }
 
 AUTOMATION_TASK_TYPES = {
@@ -83,17 +84,7 @@ def normalize_playground_data_languages(value) -> list[str]:
 
 
 def parse_payload(raw: str | None) -> dict:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-        return value if isinstance(value, dict) else {}
-    except json.JSONDecodeError:
-        try:
-            value = ast.literal_eval(raw)
-            return value if isinstance(value, dict) else {}
-        except Exception:
-            return {}
+    return parse_json_object(raw)
 
 
 def task_payload(task: AgentTask) -> dict:
@@ -509,7 +500,12 @@ def complete_task(id: int, data: Optional[dict] = None, db: Session = Depends(ge
     # === MONITORAMENTO ÚNICO APÓS O ENVIO DE TODOS OS ARQUIVOS ===
     if task.task_type == "upload_files_to_workspace":
         payload = parse_payload(task.payload_json)
-        if payload.get("start_monitoring_after_upload", True) is not False:
+        # "Executar apenas monitoramento de pasta": o agente copia os arquivos para a temp e
+        # encerra sem abrir a automacao web. Nesse modo NUNCA enfileiramos o monitoramento web
+        # (senao o Chromium subiria mesmo sem upload). Ver process_upload (monitor_only).
+        if payload.get("monitor_only"):
+            pass
+        elif payload.get("start_monitoring_after_upload", True) is not False:
             # Pega todos os arquivos desta tarefa de upload registrados no banco
             files = db.query(WorkspaceFile).filter(
                 WorkspaceFile.detection_task_id == task.id,
@@ -554,6 +550,32 @@ def complete_task(id: int, data: Optional[dict] = None, db: Session = Depends(ge
                     automation_id=automation_id,
                     metadata={"files": [item["file_name"] for item in canonical_files]},
                 )
+
+                # "Uploads concluidos = execucao concluida" (decisao do usuario): assim que TODOS
+                # os lotes foram enviados, marca a automacao como concluida para o dashboard, mesmo
+                # com o monitoramento web/conversao ainda em andamento. NAO e definitivo: o
+                # monitor_task recem-criado fica 'pending' (ativo), entao maybe_finalize_automation
+                # logo abaixo retorna cedo e NAO rebaixa este 'completed'. Quando o monitoramento
+                # (e eventuais tasks de conversao/reenvio) terminarem, maybe_finalize_automation
+                # reavalia e pode mover para manual_review/failed.
+                automation = (
+                    db.query(Automation)
+                    .filter(Automation.id == automation_id, Automation.is_deleted == False)
+                    .first()
+                    if automation_id
+                    else None
+                )
+                if automation and automation.status not in {"stopped", "paused", "archived", "deleted"}:
+                    automation.status = "completed"
+                    db.commit()
+                    create_log(
+                        db,
+                        "info",
+                        "Uploads concluidos: execucao marcada como concluida; monitoramento web/conversao seguem em segundo plano.",
+                        "automation",
+                        automation.id,
+                        automation_id=automation_id,
+                    )
 
     create_log(db, "info", "Task completed", "agent_task", task.id, user_id=task.created_by_id, task_id=task.id, automation_id=automation_id)
     maybe_finalize_automation(db, task)

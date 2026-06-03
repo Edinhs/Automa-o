@@ -1,0 +1,5 @@
+# Dependencias APENAS de desenvolvimento/validacao.
+# NAO entram na release estrita (ver RELEASE_POLICY.md / build_release_empty_db.py).
+-r requirements.txt
+pytest>=8,<9
+pytest-cov>=5,<6

@@ -4,7 +4,7 @@ from app.core.config import reset_current_environment, set_current_environment, 
 from app.routers.deps import get_current_user, require_agent_or_user
 from app.services.schedule_runner import start_schedule_runner, stop_schedule_runner
 
-from app.routers import health, auth, users, automations, workspaces, files, logs, reports, schedules, agents, integrations, executions
+from app.routers import health, auth, users, automations, workspaces, files, logs, reports, schedules, agents, integrations, executions, teams
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -57,3 +57,5 @@ app.include_router(reports.router, prefix="/api/reports", tags=["Reports"], depe
 app.include_router(schedules.router, prefix="/api/schedules", tags=["Schedules"], dependencies=protected)
 app.include_router(agents.router, prefix="/api/agents", tags=["Agents"], dependencies=agent_protected)
 app.include_router(integrations.router, prefix="/api/integrations", tags=["Integrations"], dependencies=protected)
+app.include_router(teams.router, prefix="/api/teams", tags=["Teams"], dependencies=protected)
+

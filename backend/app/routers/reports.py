@@ -13,7 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core.config import runtime_path, settings
+from app.core.config import BACKEND_DIR, runtime_path, settings
+from app.core.serialization import parse_json_object
 from app.db.session import get_db
 from app.models.automation import Automation
 from app.models.execution import ExecutionLog, ExecutionReport
@@ -143,13 +144,7 @@ def format_dt(value: datetime | None) -> str:
 
 
 def parse_json(raw: str | None) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
+    return parse_json_object(raw)
 
 
 def within_period(value: datetime | None, start: datetime | None, end: datetime | None) -> bool:
@@ -502,88 +497,296 @@ def safe_sheet_name(value: str, used: set[str]) -> str:
     return name
 
 
+# ---- Identidade visual Stellantis (template corporativo dos relatórios) ----
+BRAND_NAVY = "#26337E"
+BRAND_NAVY_DARK = "#1C2657"
+ROW_ALT = "#F2F4FA"
+TEXT_DARK = "#1A1A1A"
+TEXT_MUTED = "#6B7280"
+GRID_COLOR = "#D5DAE8"
+OK_GREEN = "#1E7B4F"
+WARN_AMBER = "#B26A00"
+ERR_RED = "#B42318"
+# Colunas estreitas (não distribuem largura como as de texto) — usado no layout do PDF.
+NARROW_HEADERS = {"ID", "Ciclo", "Extensão", "Tamanho", "Duração (s)", "Total de Arquivos", "Sucessos", "Erros", "Status", "Hora", "Dia do Mês"}
+# Colunas longas que ganham quebra de texto no XLSX.
+WRAP_HEADERS = {"Nome", "Mensagem", "Caminho original", "Playground URL", "Descrição", "Pasta Monitorada", "Pasta Temporária", "Detalhes", "Próxima Execução", "Última Execução"}
+
+
+def stellantis_logo_path() -> Path | None:
+    """Logo Stellantis para o cabeçalho dos relatórios; dist/ (release) → public/ (fonte)."""
+    for rel in ("dist/assets/stellantis_logo.png", "public/assets/stellantis_logo.png"):
+        candidate = BACKEND_DIR.parent / rel
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def period_label(filters: dict[str, Any]) -> str:
+    start = format_dt(filters.get("start")) or "—"
+    end = format_dt(filters.get("end")) or "—"
+    return f"Período: {start} a {end}"
+
+
+def status_color(value: Any) -> str | None:
+    v = str(value).strip().lower()
+    if v in {"concluída", "concluida", "completed", "ready", "active", "sucesso"}:
+        return OK_GREEN
+    if v in {"em andamento", "running", "pending", "processing", "manual_review", "pendente", "aguardando"}:
+        return WARN_AMBER
+    if v in {"failed", "erro", "error", "falha", "cancelled", "cancelada"}:
+        return ERR_RED
+    return None
+
+
 def build_excel(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> bytes:
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
 
-    wb = Workbook()
+    hx = lambda c: c.lstrip("#")
+    navy = PatternFill("solid", fgColor=hx(BRAND_NAVY))
+    navy_dark = PatternFill("solid", fgColor=hx(BRAND_NAVY_DARK))
+    alt = PatternFill("solid", fgColor=hx(ROW_ALT))
+    white_hdr = Font(bold=True, color="FFFFFF", size=10)
+    white_title = Font(bold=True, color="FFFFFF", size=15)
+    white_sub = Font(color="C9CFEA", size=9)
+    sec_band = Font(bold=True, color="FFFFFF", size=12)
+    thin = Side(style="thin", color=hx(GRID_COLOR))
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    generated = format_dt(datetime.utcnow())
+    period = period_label(filters)
+    logo_path = stellantis_logo_path()
+    summary = summary_section(report_type, file_format, filters, sections)
     used_names: set[str] = set()
-    all_sections = [summary_section(report_type, file_format, filters, sections), *sections]
-    header_fill = PatternFill("solid", fgColor="1E3A5F")
-    header_font = Font(bold=True, color="FFFFFF")
-    for index, section in enumerate(all_sections):
-        ws = wb.active if index == 0 else wb.create_sheet()
-        ws.title = safe_sheet_name(section.title, used_names)
-        for col_idx, header in enumerate(section.headers, start=1):
-            cell = ws.cell(row=1, column=col_idx, value=header)
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center")
-        for row_idx, row in enumerate(section.rows, start=2):
-            for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=normalize_cell(value))
-        if not section.rows:
-            ws.cell(row=2, column=1, value="Sem registros para os filtros selecionados.")
-        for column in ws.columns:
-            max_len = max((len(str(cell.value or "")) for cell in column), default=10)
-            ws.column_dimensions[column[0].column_letter].width = min(max(max_len + 4, 12), 70)
+    wb = Workbook()
+
+    def resumo_header(ws, span: int) -> None:
+        """Logo no topo (fundo branco) + faixa navy de título — layout aprovado pelo usuário."""
+        last = get_column_letter(max(span, 8))
+        ws.row_dimensions[1].height = 18
+        ws.row_dimensions[2].height = 22
+        if logo_path is not None:
+            img = XLImage(str(logo_path))
+            aspect = (img.width / img.height) if img.height else 4.717
+            img.height = 40
+            img.width = int(40 * aspect)
+            img.anchor = "A1"
+            ws.add_image(img)
+        ws.merge_cells(f"A3:{last}3")
+        t = ws["A3"]
+        t.value = f"Automation HUB  —  {report_type}"
+        t.fill = navy
+        t.font = white_title
+        t.alignment = Alignment(horizontal="right", vertical="center")
+        ws.row_dimensions[3].height = 24
+        ws.merge_cells(f"A4:{last}4")
+        s = ws["A4"]
+        s.value = f"{period}    •    Gerado em: {generated}    •    Stellantis — Confidencial"
+        s.fill = navy
+        s.font = white_sub
+        s.alignment = Alignment(horizontal="right", vertical="center")
+        ws.row_dimensions[4].height = 14
+
+    def write_section(ws, section: ReportSection, band_label: str, start_row: int, summary_mode: bool = False) -> None:
+        ncols = max(len(section.headers), 1)
+        last = get_column_letter(ncols)
+        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=ncols)
+        band = ws.cell(row=start_row, column=1, value=band_label)
+        band.fill = navy_dark
+        band.font = sec_band
+        band.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[start_row].height = 22
+        hrow = start_row + 1
+        for c, header in enumerate(section.headers, start=1):
+            cell = ws.cell(row=hrow, column=c, value=header)
+            cell.fill = navy
+            cell.font = white_hdr
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        rows = section.rows or [["Sem registros para os filtros selecionados."]]
+        status_idx = section.headers.index("Status") + 1 if "Status" in section.headers else None
+        for ri, row in enumerate(rows, start=hrow + 1):
+            for ci, value in enumerate(row, start=1):
+                cell = ws.cell(row=ri, column=ci, value=normalize_cell(value))
+                cell.border = border
+                header = section.headers[ci - 1] if ci - 1 < len(section.headers) else ""
+                cell.alignment = Alignment(vertical="center", wrap_text=header in WRAP_HEADERS)
+                if (ri - hrow) % 2 == 0:
+                    cell.fill = alt
+                if status_idx and ci == status_idx:
+                    col = status_color(value)
+                    if col:
+                        cell.font = Font(bold=True, color=hx(col))
+        ws.auto_filter.ref = f"A{hrow}:{last}{hrow + len(rows)}"
+        if not summary_mode:
+            ws.freeze_panes = ws.cell(row=hrow + 1, column=1)
+        for col in range(1, ncols + 1):
+            letter = get_column_letter(col)
+            header = section.headers[col - 1] if col - 1 < len(section.headers) else ""
+            values = [normalize_cell(r[col - 1]) if col - 1 < len(r) else "" for r in rows]
+            maxlen = max([len(header)] + [len(v) for v in values], default=12)
+            if header in WRAP_HEADERS:
+                ws.column_dimensions[letter].width = min(max(maxlen, 18), 42)
+            else:
+                ws.column_dimensions[letter].width = min(max(maxlen + 3, 10), 32)
+
+    # Aba Resumo (com logo + faixa de título)
+    ws = wb.active
+    ws.title = safe_sheet_name(summary.title, used_names)
+    resumo_header(ws, len(summary.headers))
+    write_section(ws, summary, "RESUMO", start_row=6, summary_mode=True)
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 56
+    ws.sheet_view.showGridLines = False
+
+    # Uma aba por relatório (seção), com faixa de título no topo
+    for section in sections:
+        ws = wb.create_sheet(safe_sheet_name(section.title, used_names))
+        write_section(ws, section, section.title.upper(), start_row=1)
+        ws.sheet_view.showGridLines = False
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-def pdf_table(section: ReportSection, styles):
-    from reportlab.lib import colors
-    from reportlab.platypus import Paragraph, Table, TableStyle
-
-    data_rows = section.rows or [["Sem registros para os filtros selecionados."] + [""] * (len(section.headers) - 1)]
-    table_data = [
-        [Paragraph(f"<b>{escape(str(header))}</b>", styles["BodyText"]) for header in section.headers],
-        *[[Paragraph(escape(normalize_cell(value)), styles["BodyText"]) for value in row] for row in data_rows[:80]],
-    ]
-    col_width = 760 / max(len(section.headers), 1)
-    table = Table(table_data, colWidths=[col_width] * len(section.headers), repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A5F")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6F8")]),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("PADDING", (0, 0), (-1, -1), 3),
-    ]))
-    return table
-
-
 def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> bytes:
+    from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
-    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas as canvas_mod
+    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    page_w, page_h = landscape(A4)
+    left = right = 1.1 * cm
+    header_h = 1.9 * cm
+    footer_h = 1.0 * cm
+    usable = page_w - left - right
+    generated = format_dt(datetime.utcnow())
+    period = period_label(filters)
+    logo_path = stellantis_logo_path()
+    logo_reader = ImageReader(str(logo_path)) if logo_path else None
+    if logo_reader is not None:
+        lw, lh = logo_reader.getSize()
+        aspect = (lw / lh) if lh else 4.717
+    else:
+        aspect = 4.717
+    logo_h = 0.85 * cm
+    logo_w = logo_h * aspect
+
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle("rpt_body", parent=styles["BodyText"], fontSize=6.5, leading=8, textColor=colors.HexColor(TEXT_DARK))
+    head_cell = ParagraphStyle("rpt_hc", parent=body, textColor=colors.white, fontName="Helvetica-Bold")
+    sec_title = ParagraphStyle("rpt_st", parent=styles["Heading2"], fontSize=12, textColor=colors.HexColor(BRAND_NAVY), spaceBefore=2, spaceAfter=5)
+
+    def draw_chrome(c, total_pages: int) -> None:
+        band_y = page_h - header_h
+        c.setFillColor(colors.HexColor(BRAND_NAVY))
+        c.rect(0, band_y, page_w, header_h, fill=1, stroke=0)
+        c.setFillColor(colors.HexColor("#3A47A0"))
+        c.rect(0, band_y - 3, page_w, 3, fill=1, stroke=0)
+        if logo_reader is not None:
+            pad = 4
+            c.setFillColor(colors.white)
+            c.roundRect(left - pad, band_y + (header_h - logo_h) / 2 - pad, logo_w + 2 * pad, logo_h + 2 * pad, 4, fill=1, stroke=0)
+            c.drawImage(logo_reader, left, band_y + (header_h - logo_h) / 2, width=logo_w, height=logo_h, mask="auto")
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawRightString(page_w - right, band_y + header_h - 17, "Automation HUB")
+        c.setFont("Helvetica", 10)
+        c.drawRightString(page_w - right, band_y + header_h - 31, report_type)
+        c.setFillColor(colors.HexColor("#C9CFEA"))
+        c.setFont("Helvetica", 7.5)
+        c.drawRightString(page_w - right, band_y + 8, f"{period}   •   Gerado em: {generated}")
+        c.setStrokeColor(colors.HexColor(GRID_COLOR))
+        c.setLineWidth(0.5)
+        c.line(left, footer_h, page_w - right, footer_h)
+        c.setFont("Helvetica", 7)
+        c.setFillColor(colors.HexColor(TEXT_MUTED))
+        c.drawString(left, footer_h - 11, "Stellantis — Confidencial · uso interno")
+        c.drawCentredString(page_w / 2, footer_h - 11, "Automation HUB")
+        c.drawRightString(page_w - right, footer_h - 11, f"pág {c.getPageNumber()}/{total_pages}")
+
+    class NumberedCanvas(canvas_mod.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_states: list[dict] = []
+
+        def showPage(self):
+            self._saved_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._saved_states)
+            for state in self._saved_states:
+                self.__dict__.update(state)
+                draw_chrome(self, total)
+                super().showPage()
+            super().save()
+
+    def col_widths(headers: list[str], summary_mode: bool) -> list[float]:
+        if summary_mode:
+            return [4.5 * cm, usable - 4.5 * cm]
+        fixed = {h: (0.9 * cm if h == "ID" else 1.5 * cm) for h in headers if h in NARROW_HEADERS}
+        flex = [h for h in headers if h not in fixed]
+        each = (usable - sum(fixed.values())) / len(flex) if flex else 0
+        return [fixed.get(h, each) for h in headers]
+
+    def styled_table(section: ReportSection, summary_mode: bool = False) -> Table:
+        data = [[Paragraph(escape(str(h)), head_cell) for h in section.headers]]
+        rows = section.rows or [["Sem registros para os filtros selecionados."] + [""] * (len(section.headers) - 1)]
+        status_idx = section.headers.index("Status") if "Status" in section.headers else None
+        for ri, row in enumerate(rows[:80], start=1):
+            cells = []
+            for ci, value in enumerate(row):
+                st = ParagraphStyle(f"c{ri}_{ci}", parent=body)
+                if status_idx is not None and ci == status_idx:
+                    col = status_color(value)
+                    if col:
+                        st.textColor = colors.HexColor(col)
+                        st.fontName = "Helvetica-Bold"
+                cells.append(Paragraph(escape(normalize_cell(value)), st))
+            data.append(cells)
+        table = Table(data, colWidths=col_widths(section.headers, summary_mode), repeatRows=1)
+        style = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_NAVY)),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(ROW_ALT)]),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.HexColor(BRAND_NAVY_DARK)),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor(GRID_COLOR)),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ]
+        if summary_mode:
+            style += [
+                ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+                ("TEXTCOLOR", (0, 1), (0, -1), colors.HexColor(BRAND_NAVY)),
+            ]
+        table.setStyle(TableStyle(style))
+        return table
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=cm, rightMargin=cm, topMargin=cm, bottomMargin=cm)
-    styles = getSampleStyleSheet()
-    styles["BodyText"].fontSize = 6
-    styles["BodyText"].leading = 7
-    elements = [
-        Paragraph("<b>Stellantis Automation HUB</b>", styles["Title"]),
-        Paragraph(f"Relatorio: {escape(report_type)}", styles["Heading2"]),
-        Spacer(1, 0.3 * cm),
-        pdf_table(summary_section(report_type, file_format, filters, sections), styles),
-        Spacer(1, 0.5 * cm),
-    ]
-    for index, section in enumerate(sections):
-        if index:
-            elements.append(PageBreak())
-        elements.append(Paragraph(escape(section.title), styles["Heading2"]))
-        elements.append(Spacer(1, 0.2 * cm))
-        elements.append(pdf_table(section, styles))
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4), leftMargin=left, rightMargin=right,
+        topMargin=header_h + 0.35 * cm, bottomMargin=footer_h + 0.35 * cm,
+    )
+    summary = summary_section(report_type, file_format, filters, sections)
+    elements: list[Any] = [KeepTogether([Paragraph(escape(summary.title), sec_title), styled_table(summary, summary_mode=True)]), Spacer(1, 0.4 * cm)]
+    for section in sections:
+        note = []
         if len(section.rows) > 80:
-            elements.append(Spacer(1, 0.2 * cm))
-            elements.append(Paragraph(f"Exibindo 80 de {len(section.rows)} registros nesta secao.", styles["Normal"]))
-    doc.build(elements)
+            note = [Paragraph(f"Exibindo 80 de {len(section.rows)} registros nesta seção.", body)]
+        elements.append(KeepTogether([Paragraph(escape(section.title), sec_title), styled_table(section), *note]))
+        elements.append(Spacer(1, 0.45 * cm))
+    doc.build(elements, canvasmaker=NumberedCanvas)
     return buf.getvalue()
 
 
