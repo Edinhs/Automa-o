@@ -1009,6 +1009,19 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
         raise ManualReviewRequired("Maximo de tentativas atingido para reenvio.")
 
     path = Path(str(source))
+    # Fallback: se o temp_path original nao existe mais (o process_monitor pode ter movido
+    # o arquivo de lote_XXX/ para a subpasta PDF/ via shutil.move), procura o mesmo nome
+    # em PDF/ dentro do diretorio pai antes de falhar a conversao.
+    if not path.exists():
+        pdf_sibling = path.parent / "PDF" / path.name
+        if pdf_sibling.exists():
+            log(
+                "info",
+                f"Arquivo nao encontrado no temp_path original; usando versao em PDF/: {pdf_sibling.name}",
+                file_id=file_id,
+                automation_id=payload.get("automation_id"),
+            )
+            path = pdf_sibling
     if path.suffix.lower() == ".pdf":
         pdf_path = str(path)
         log("info", "Arquivo ja e PDF; reenvio sem nova conversao.", file_id=file_id, automation_id=payload.get("automation_id"))

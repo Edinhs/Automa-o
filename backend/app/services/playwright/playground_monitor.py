@@ -15,6 +15,7 @@ from app.services.playwright.selectors import (
     DELETE_FILE_CONTROL_TEXTS,
     ERROR_STATUS_TEXTS,
     FILES_TAB_TEXTS,
+    NEXT_PAGE_BUTTON_CSS,
     NEXT_PAGE_TEXTS,
     PENDING_STATUS_TEXTS,
     PROCESSING_STATUS_TEXTS,
@@ -290,21 +291,49 @@ def page_rows_signature(page) -> str:
 
 
 def goto_next_files_page(page) -> bool:
-    """Clica em ">" (proxima pagina). Retorna True se a tabela mudou (havia outra pagina)."""
+    """Clica no botao ">" (proxima pagina) e retorna True se o conteudo da tabela mudou.
+
+    O botao Cloudscape tem aria-label vazio e nenhum texto; por isso os seletores semanticos
+    por nome nao o encontram. A estrategia primaria usa a classe CSS 'name-angle-right' (por
+    substring, tolerando o sufixo hash que varia entre builds) escopada ao <li> de paginacao.
+    Os fallbacks por texto cobrem outras implementacoes de UI (PT/EN).
+
+    IMPORTANTE: o botao SEMPRE esta presente na tela (mesmo sem pagina 2). A existencia do
+    elemento NAO indica que ha proxima pagina. Somente a mudanca na assinatura das linhas
+    confirma que a navegacao avancou de verdade.
+    """
     signature_before = page_rows_signature(page)
-    clicked = click_first(
-        [lambda text=text: page.get_by_role("button", name=text, exact=True) for text in NEXT_PAGE_TEXTS]
-        + [lambda text=text: page.get_by_role("link", name=text, exact=True) for text in NEXT_PAGE_TEXTS]
-        + [lambda text=text: page.locator(f"[aria-label*='{text}' i]") for text in NEXT_PAGE_TEXTS]
-        + [lambda text=text: page.locator(f"[title*='{text}' i]") for text in NEXT_PAGE_TEXTS],
-        timeout_ms=1500,
-    )
+
+    # Tentativa primaria: icone Cloudscape angle-right (aria-label vazio, sem texto).
+    # NEXT_PAGE_BUTTON_CSS = "li[class*='page-item'] button[class*='arrow']:has(span[class*='name-angle-right'])"
+    clicked = False
+    try:
+        btn = page.locator(NEXT_PAGE_BUTTON_CSS)
+        if btn.count() and btn.first.is_visible(timeout=1500):
+            btn.first.click(timeout=4000)
+            clicked = True
+    except Exception:
+        pass
+
+    # Fallbacks por texto (PT/EN) para outras variacoes de UI.
+    if not clicked:
+        clicked = click_first(
+            [lambda text=text: page.get_by_role("button", name=text, exact=True) for text in NEXT_PAGE_TEXTS]
+            + [lambda text=text: page.get_by_role("link", name=text, exact=True) for text in NEXT_PAGE_TEXTS]
+            + [lambda text=text: page.locator(f"[aria-label*='{text}' i]") for text in NEXT_PAGE_TEXTS]
+            + [lambda text=text: page.locator(f"[title*='{text}' i]") for text in NEXT_PAGE_TEXTS],
+            timeout_ms=1500,
+        )
+
     if not clicked:
         return False
+
+    # Aguarda ate 3.6s pela mudanca de conteudo — confirma que havia pagina 2.
     for _ in range(12):
         time.sleep(0.3)
         if page_rows_signature(page) != signature_before:
             return True
+    # Clicou mas o conteudo nao mudou: botao existia sem pagina 2.
     return False
 
 
@@ -610,11 +639,26 @@ def delete_one_with_verify(
             log("info", f"'{target}' nao esta na tabela (nada para deletar).")
             return True
         last_row = row
+        live = read_live_row(row)
+        # Trava de IDENTIDADE: relê o NOME da propria linha imediatamente antes de clicar.
+        # So apaga se o nome bater EXATAMENTE com o alvo. Quando a linha veio do fallback de
+        # "unica candidata" (find_file_row) sem nome exato, isto impede apagar a linha errada
+        # (tipicamente a primeira da tabela): aborta e manda pra revisao manual em vez de apagar
+        # no escuro.
+        live_name = live.get("name") or ""
+        if live_name and live_name != clean_text(target):
+            log("warning", f"Delete ABORTADO: linha localizada ('{live_name}') != alvo ('{target}'); revisao manual.")
+            return False
         # Trava de seguranca: relê o status DA PROPRIA linha imediatamente antes de clicar.
-        # Se estiver Ready, ABORTA (nunca apaga um arquivo pronto, mesmo que tenha entrado em
-        # 'deletable' por leitura de status equivocada a montante).
-        if live_row_status(row) == "Ready":
+        # So deleta se o status for Error ou Processing. Ready NUNCA e apagado.
+        # Pending/Unknown/NotFound tambem NAO sao deletados aqui: se chegaram ate este ponto
+        # por engano (leitura equivocada a montante), o abort impede a exclusao indevida.
+        live_status = normalize_status(live.get("status") or live.get("text") or "")
+        if live_status == "Ready":
             log("warning", f"Delete ABORTADO: a linha de '{target}' esta Ready (trava de seguranca).")
+            return False
+        if live_status not in ("Error", "Processing"):
+            log("warning", f"Delete ABORTADO: status '{live_status}' de '{target}' nao e Error/Processing (trava de seguranca).")
             return False
         if not click_row_delete_control(row, log, target):
             return False
@@ -706,42 +750,85 @@ def monitor_workspace_files_status(
         ready = [name for name in expected_names if statuses.get(name, {}).get("status") == "Ready"]
         # Pending = acao manual (nao tratar automaticamente).
         pending = [name for name in expected_names if statuses.get(name, {}).get("status") == "Pending"]
-        # Todo nao-Ready que nao for Pending entra no tratamento (Error/Processing/NotFound/Unknown).
-        to_fix = [name for name in expected_names if name not in ready and name not in pending]
-        not_found = [name for name in to_fix if statuses.get(name, {}).get("status") == "NotFound"]
-        deletable = [name for name in to_fix if name not in not_found]
+        # Deletar APENAS Error e Processing. NotFound/Unknown nao existem na tabela; Pending fica
+        # para revisao manual. Nenhum desses tres entra em 'deletable'.
+        error_processing = [
+            name for name in expected_names
+            if statuses.get(name, {}).get("status") in ("Error", "Processing")
+        ]
+        not_found = [
+            name for name in expected_names
+            if statuses.get(name, {}).get("status") == "NotFound"
+        ]
+        # Unknown = status lido mas nao reconhecido; tratamos como nao-deletavel / revisao manual.
+        unknown = [
+            name for name in expected_names
+            if statuses.get(name, {}).get("status") == "Unknown"
+        ]
 
         if ready:
             log("info", "Arquivos prontos (Ready).", metadata={"files": ready})
         if pending:
             log("warning", "Arquivos em Pending: tratados como acao manual.", metadata={"files": pending})
-        if to_fix:
-            log("warning", "Arquivos nao-Ready: deletar na web + converter PDF + reenviar.", metadata={"files": to_fix})
+        if error_processing:
+            log("warning", "Arquivos Error/Processing: deletar na web + converter PDF + reenviar.", metadata={"files": error_processing})
+        if not_found:
+            log("warning", "Arquivos nao encontrados na tabela (NotFound): reenviar sem deletar.", metadata={"files": not_found})
+        if unknown:
+            log("warning", "Arquivos com status desconhecido (Unknown): revisao manual.", metadata={"files": unknown})
 
-        # 3) Deleta na web (com confirmacao por F5) os que estao na tabela.
+        # --- ETAPA (a): deletar TODOS os Error/Processing, confirmando via F5 ---
         deleted, delete_failed = delete_all_to_fix(
-            page, deletable, payload, workspace_name, log, should_continue=should_continue
+            page, error_processing, payload, workspace_name, log, should_continue=should_continue
         )
-
-        # So reenviamos como PDF o que foi REALMENTE removido da web (delete confirmado por F5)
-        # ou que nunca esteve na tabela (NotFound). Delete nao confirmado NAO e reenviado: vira
-        # revisao manual, para nunca duplicar o arquivo no workspace (decisao do usuario).
-        to_resend = list(dict.fromkeys(deleted + not_found))
-        manual_review = list(dict.fromkeys(pending + delete_failed))
         if delete_failed:
             log(
                 "warning",
                 "Delete nao confirmado: enviados para revisao manual (sem reenvio, para nao duplicar).",
                 metadata={"files": delete_failed},
             )
+
+        # --- ETAPA (b): verificar integridade dos Ready apos as delecoes ---
+        # Reler TODAS as paginas para confirmar que cada arquivo Ready continua presente e Ready.
+        # Se algum sumiu ou mudou de status, inclui no reenvio (mesma conversao PDF).
+        ready_lost: list[str] = []
+        if ready:
+            log("info", "Verificando integridade dos arquivos Ready apos as delecoes.", metadata={"files": ready})
+            # F5 antes de reler para garantir estado atual do servidor.
+            f5_reopen_files(page, payload, workspace_name, log, should_continue)
+            open_files_tab(page, log)
+            post_delete_statuses = read_all_pages_statuses(page, ready, log, should_continue=should_continue)
+            for name in ready:
+                post_status = post_delete_statuses.get(name, {}).get("status", "NotFound")
+                if post_status != "Ready":
+                    log(
+                        "warning",
+                        f"Arquivo Ready '{name}' nao esta mais Ready apos delecoes (status atual: {post_status}). Marcado para reenvio.",
+                        metadata={"post_delete_status": post_status},
+                    )
+                    ready_lost.append(name)
+            if ready_lost:
+                log("warning", "Arquivos Ready perdidos apos delecoes: reenviar com conversao PDF.", metadata={"files": ready_lost})
+            else:
+                log("info", "Todos os arquivos Ready continuam presentes e prontos.")
+
+        # --- ETAPA (c): montar lista de reenvio (so apos confirmacao de delete) ---
+        # So reenviamos como PDF o que foi REALMENTE removido da web (delete confirmado por F5),
+        # ausentes (NotFound) ou Ready que se perderam. Delete nao confirmado NAO e reenviado:
+        # vira revisao manual, para nunca duplicar o arquivo no workspace (decisao do usuario).
+        to_resend = list(dict.fromkeys(deleted + not_found + ready_lost))
+        manual_review = list(dict.fromkeys(pending + delete_failed + unknown))
+
         return {
             "status": "completed",
-            "ready": ready,
+            "ready": [name for name in ready if name not in ready_lost],
+            "ready_lost": ready_lost,
             "manual_review": manual_review,
             "to_resend": to_resend,
             "deleted": deleted,
             "delete_failed": delete_failed,
             "not_found": not_found,
+            "unknown": unknown,
             "statuses": statuses,
         }
     except Exception:

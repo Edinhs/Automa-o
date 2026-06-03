@@ -240,6 +240,19 @@ NEXT_PAGE_TEXTS = [
     "Próxima página",
 ]
 
+# Seletor CSS do botao de proxima pagina do AWS Cloudscape (aria-label vazio, sem texto).
+# O icone usa a classe "awsui_name-angle-right_*" (sufixo hash varia entre builds).
+# Escopamos ao <li> da paginacao para nao confundir com outros angle-right da pagina.
+# A estrategia e: locator do <span> com name-angle-right, depois .locator('xpath=..') sobe
+# para o <button> pai. O chamador faz:
+#   span_loc = page.locator(NEXT_PAGE_ICON_CSS)
+#   button_loc = span_loc.locator("xpath=../..")   # span -> button
+# NEXT_PAGE_ICON_CSS aponta ao <span>, NEXT_PAGE_BUTTON_CSS ao <button> direto (atalho).
+NEXT_PAGE_ICON_CSS = "li[class*='page-item'] button[class*='arrow'] span[class*='name-angle-right']"
+# <button> que contem o icone angle-right dentro de um <li> de paginacao.
+# :has() e suportado por Playwright/Chromium desde 2022.
+NEXT_PAGE_BUTTON_CSS = "li[class*='page-item'] button[class*='arrow']:has(span[class*='name-angle-right'])"
+
 # Controle de deletar arquivo na coluna "Actions" (icone folha + x, azul).
 # A busca e SEMPRE feita dentro da linha do arquivo alvo (row-scoped) e a delecao so e
 # considerada efetiva apos a linha sumir no F5 seguinte. AJUSTE/COMPLEMENTE com o
