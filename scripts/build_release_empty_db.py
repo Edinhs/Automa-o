@@ -27,9 +27,21 @@ ROOT_FILES = [
     "start_all.bat",
     "restart_services.bat",
     "stop_all.bat",
+    "stop_automation.bat",
     "start_all_hidden.vbs",
     "start_backend.bat",
     "start_dashboard.bat",
+]
+
+# Arquivos que a release NUNCA pode sair sem eles. copy_file ignora ausentes em
+# silencio e os flags has_* do RELEASE_VALIDATION.txt sao so informativos; esta
+# lista e checada contra o pacote final e FALHA o build (exit != 0) se faltar qualquer
+# um. stop_automation.bat e a bat que finaliza TUDO (navegadores da automacao + agente
+# + backend + dashboard); stop_all.bat para os servicos do pacote. Caminhos relativos a
+# raiz da release (mesma chave usada em ROOT_FILES).
+REQUIRED_RELEASE_FILES = [
+    "stop_automation.bat",
+    "stop_all.bat",
 ]
 
 ROOT_DIRS = ["dist", "public", "scripts"]
@@ -157,6 +169,7 @@ def main() -> int:
     copied_playwright = copy_playwright_runtime(backend_dst)
 
     forbidden = forbidden_entries(release_dir)
+    missing_required = [item for item in REQUIRED_RELEASE_FILES if not (release_dir / item).is_file()]
     validation_path = release_dir / "RELEASE_VALIDATION.txt"
     validation_path.write_text("validation=pending\n", encoding="utf-8")
     zip_path = create_zip(release_dir)
@@ -175,6 +188,7 @@ def main() -> int:
             f"has_start_all_hidden={(release_dir / 'start_all_hidden.vbs').exists()}",
             f"has_restart_services={(release_dir / 'restart_services.bat').exists()}",
             f"has_stop_all={(release_dir / 'stop_all.bat').exists()}",
+            f"has_stop_automation={(release_dir / 'stop_automation.bat').exists()}",
             f"has_purge_legacy_reports_cli={(backend_dst / 'app' / 'cli' / 'purge_legacy_reports.py').exists()}",
             f"has_folder_monitoring_report_migration={(backend_dst / 'alembic' / 'versions' / 'b8e5f7a9c013_0008_folder_monitoring_report_scope.py').exists()}",
             f"has_offline_chromium={(backend_dst / PLAYWRIGHT_RUNTIME_DIR / 'chromium-1217').exists()}",
@@ -182,17 +196,26 @@ def main() -> int:
             f"has_offline_ffmpeg={(backend_dst / PLAYWRIGHT_RUNTIME_DIR / 'ffmpeg-1011').exists()}",
             f"playwright_runtime_items={','.join(copied_playwright)}",
             f"forbidden_entries={len(forbidden)}",
+            f"missing_required={len(missing_required)}",
             f"entry_count={entry_count}",
             f"zip_path={zip_path}",
             f"zip_size_mb={zip_path.stat().st_size / (1024 * 1024):.2f}",
         ]
         if forbidden:
             validation.append("forbidden_list=" + ", ".join(forbidden[:50]))
+        if missing_required:
+            validation.append("missing_required_list=" + ", ".join(missing_required))
         validation_path.write_text("\n".join(validation) + "\n", encoding="utf-8")
         zip_path.unlink()
         zip_path = create_zip(release_dir)
     print("\n".join(validation))
-    return 1 if forbidden else 0
+    if missing_required:
+        print(
+            "ERRO: release sem arquivo(s) obrigatorio(s): "
+            + ", ".join(missing_required)
+            + ". Restaure-o(s) na raiz do repo e refaca o build."
+        )
+    return 1 if (forbidden or missing_required) else 0
 
 
 if __name__ == "__main__":

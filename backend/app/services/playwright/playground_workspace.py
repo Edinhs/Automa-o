@@ -259,6 +259,35 @@ def search_workspace(page, workspace_name: str, log: Callable) -> bool:
     return workspace_name.lower() in page_text(page).lower()
 
 
+def dismiss_filter_suggestions(page, timeout_ms: int = 2000) -> None:
+    """Fecha o dropdown de autosuggest do Filter Workspace.
+
+    Depois de digitar no filtro, o Cloudscape abre um dropdown de sugestoes
+    (role="option", com awsui_filtering-match-highlight) que se sobrepoe ao link
+    do workspace na listagem e intercepta o clique ("subtree intercepts pointer
+    events"). Pressionar Escape fecha o dropdown sem limpar o texto do filtro,
+    liberando o link para o clique direto. Nao afeta o caminho preferido por URL
+    direta (page.goto), que ja e imune ao overlay.
+    """
+    try:
+        if not _count(page.locator("[role='option']")):
+            return
+    except Exception:
+        return
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        return
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    while time.monotonic() < deadline:
+        try:
+            if not _count(page.locator("[role='option']")):
+                return
+        except Exception:
+            return
+        time.sleep(0.1)
+
+
 def workspace_page_is_stale(page) -> bool:
     body = page_text(page).lower()
     return (
@@ -430,6 +459,9 @@ def select_workspace_from_list(page, workspace_name: str, log: Callable) -> bool
     if click_workspace_option(page, workspace_name, log):
         return True
 
+    # O dropdown de sugestoes do filtro fica sobre o link do workspace e
+    # intercepta o clique; fecha-lo antes do clique direto evita o timeout.
+    dismiss_filter_suggestions(page)
     try:
         return click_first(
             [

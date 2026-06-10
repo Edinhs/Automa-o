@@ -14,6 +14,19 @@ MAX_IGNORED_FILE_LOGS = 50
 MAX_MATCHED_FILE_LOGS = 200
 MAX_COPIED_FILE_LOGS = 200
 
+# Prefixos de arquivos temporarios/bloqueio que NUNCA sao documentos reais, mas que carregam uma
+# extensao valida (.doc/.docx/.xlsx...) e por isso passavam pelo filtro de extensao: arquivos
+# "owner" do MS Office (~$nome.docx, 162 bytes, criados enquanto o documento esta aberto) e locks
+# do LibreOffice (.~lock.nome#). Ingeri-los gera Error no Playground e o arquivo some entre ciclos
+# (o Office apaga o ~$ ao fechar). Sao filtrados na origem (scan) para nunca entrarem no upload.
+TEMP_LOCK_PREFIXES = ("~$", ".~lock.")
+
+
+def is_temp_or_lock_file(name: str) -> bool:
+    """True para owner files do Office (~$...) e locks do LibreOffice (.~lock....)."""
+    lowered = (name or "").lower()
+    return any(lowered.startswith(prefix) for prefix in TEMP_LOCK_PREFIXES)
+
 
 def normalize_folder_path(value: str | None) -> str | None:
     if value is None:
@@ -72,6 +85,7 @@ def scan_monitored_folder(
     files_seen = 0
     ignored_logs = 0
     matched_logs = 0
+    temp_lock_skipped = 0
 
     log_event(log, "info", "Scan da pasta monitorada iniciado.", metadata={"folder_path": str(folder)})
     stack = [folder]
@@ -104,6 +118,12 @@ def scan_monitored_folder(
 
             files_seen += 1
             path = Path(entry.path)
+            if is_temp_or_lock_file(path.name):
+                temp_lock_skipped += 1
+                if ignored_logs < MAX_IGNORED_FILE_LOGS:
+                    ignored_logs += 1
+                    log_event(log, "info", f"Arquivo temporario/bloqueio ignorado: {path.name}", metadata={"path": str(path), "reason": "office_temp_or_lock"})
+                continue
             extension = path.suffix.lower() or "<no_extension>"
             if path.suffix.lower() in enabled_exts:
                 files.append(path)
@@ -122,6 +142,7 @@ def scan_monitored_folder(
         "matched_files": len(files),
         "allowed_extensions": sorted(enabled_exts),
         "ignored_extensions": sorted(ignored_extensions),
+        "temp_lock_skipped": temp_lock_skipped,
         "inaccessible_dirs_count": len(inaccessible_dirs),
         "inaccessible_dirs": inaccessible_dirs[:20],
     }

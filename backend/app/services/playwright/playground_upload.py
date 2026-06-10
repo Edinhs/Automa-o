@@ -1550,24 +1550,25 @@ def convert_file_to_pdf(original_path: str, output_dir: str | None, log: Callabl
 
 
 def convert_to_pdf_in_folder(source_path: str, pdf_dir: str, log: Callable) -> str:
-    """Recorta o arquivo de origem para a pasta 'PDF' (no temp) e o converte para PDF ali.
+    """Copia o arquivo de origem para a pasta 'PDF' (no temp) e o converte para PDF ali.
 
-    Usado no retry pos-monitoramento: o arquivo nao-Ready e movido para uma pasta PDF dentro
-    do staging e convertido no mesmo lugar antes do reenvio.
+    Usado no retry pos-monitoramento: o arquivo nao-Ready e COPIADO para uma pasta PDF dentro
+    do staging e convertido no mesmo lugar antes do reenvio. O original permanece no lugar
+    de origem (nao e movido nem removido).
     """
     destination = Path(pdf_dir)
     destination.mkdir(parents=True, exist_ok=True)
     source = Path(source_path)
     if not source.exists():
-        raise UnsupportedFormat(f"Arquivo nao encontrado para mover/converter: {source_path}")
-    moved = destination / source.name
+        raise UnsupportedFormat(f"Arquivo nao encontrado para copiar/converter: {source_path}")
+    copied = destination / source.name
     try:
-        if source.resolve() != moved.resolve():
-            if moved.exists():
-                moved = destination / f"{source.stem}_{int(time.time())}{source.suffix}"
-            shutil.move(str(source), str(moved))
-            log("info", f"Arquivo recortado para a pasta PDF: {moved.name}", metadata={"pdf_dir": str(destination)})
+        if source.resolve() != copied.resolve():
+            if copied.exists():
+                copied = destination / f"{source.stem}_{int(time.time())}{source.suffix}"
+            shutil.copy2(str(source), str(copied))
+            log("info", f"Arquivo copiado para a pasta PDF: {copied.name}", metadata={"pdf_dir": str(destination)})
     except Exception as exc:
-        log("warning", f"Falha ao recortar para a pasta PDF; convertendo do local original: {exc}")
-        moved = source
-    return convert_file_to_pdf(str(moved), str(destination), log)
+        log("warning", f"Falha ao copiar para a pasta PDF; convertendo do local original: {exc}")
+        copied = source
+    return convert_file_to_pdf(str(copied), str(destination), log)

@@ -53,6 +53,10 @@ REPORTABLE_TERMINAL_STATUSES = {
     "no_files_copied",
 }
 BATCH_CHECKPOINT_ATTEMPTS = 3
+# Monitoramento de presenca pos-reenvio: maximo de tentativas e espera curta (linhas aparecem
+# como Pending logo apos o upload, entao nao e necessario esperar o tempo cheio do monitoramento).
+PRESENCE_MAX_ATTEMPTS = 3
+PRESENCE_MONITORING_TIMEOUT_MINUTES = 2
 
 
 def request_json(session: requests.Session, method: str, path: str, payload: Optional[dict] = None) -> dict:
@@ -866,6 +870,160 @@ def _pdf_dir_for_resend(payload: dict[str, Any], files: list[Any], to_resend_nam
     return str(Path(base_temp) / "PDF") if base_temp else None
 
 
+def _existing_conversion_source(item: dict[str, Any], temp_folder_path: Optional[str]) -> Optional[str]:
+    """Caminho EXISTENTE para (re)converter um arquivo nao-Ready quando o temp_path original sumiu.
+
+    O temp_path pode ter sido removido externamente ou o arquivo pode ainda nao existir no lote.
+    Como convert_to_pdf_in_folder agora COPIA (shutil.copy2) para a pasta PDF/ sem remover a
+    origem, o fallback defensivo a seguir continua valido para situacoes onde o temp foi apagado
+    por outra razao. Resolve, sem NUNCA mover o original, na ordem: (1) temp_path; (2)
+    <staging>/PDF/<stem>.pdf (ja convertido) e <staging>/PDF/<nome> (copia na pasta PDF);
+    (3) pdf_path do item; (4) original_path (preservado na pasta monitorada).
+    Retorna None se nenhum existir.
+    """
+    candidates: list[Path] = []
+    temp_path = item.get("temp_path") or item.get("path")
+    name = Path(str(temp_path)).name if temp_path else None
+    pdf_roots: list[Path] = []
+    if temp_folder_path:
+        pdf_roots.append(Path(str(temp_folder_path)) / "PDF")
+    if temp_path:
+        tp = Path(str(temp_path))
+        candidates.append(tp)
+        pdf_roots.append(tp.parent.parent / "PDF")  # raiz do staging (pai do lote_XXX)
+        pdf_roots.append(tp.parent / "PDF")          # tolera layout alternativo
+    if name:
+        stem = Path(name).stem
+        for root in pdf_roots:
+            candidates.append(root / f"{stem}.pdf")  # ja convertido em ciclo anterior
+            candidates.append(root / name)            # ja recortado, ainda nao convertido
+    if item.get("pdf_path"):
+        candidates.append(Path(str(item["pdf_path"])))
+    if item.get("original_path"):
+        candidates.append(Path(str(item["original_path"])))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if candidate.is_file():
+                return key
+        except OSError:
+            continue
+    return None
+
+
+def _build_resend_files_from_names(
+    session: requests.Session,
+    files: list[Any],
+    to_resend_names: list[str],
+    pdf_dir: Optional[str],
+    payload: dict[str, Any],
+    automation_id: Any,
+    log,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """Converte nomes para PDF e monta a lista de itens para o reenvio em lote.
+
+    Reutilizado tanto pelo monitor normal quanto pelo monitoramento de presenca.
+    Retorna: (resend_files, resent_names, conversion_failed).
+    """
+    resend_files: list[dict[str, Any]] = []
+    resent_names: list[str] = []
+    conversion_failed: list[str] = []
+    for file_name in to_resend_names:
+        item = _item_by_name(files, file_name)
+        file_id = item.get("file_id") or item.get("id")
+        source = item.get("temp_path") or item.get("path") or item.get("original_path")
+        if not source:
+            update_file(session, file_id, {"status": "manual_review", "last_error": "Sem caminho de origem para reenvio."})
+            conversion_failed.append(file_name)
+            continue
+        target_pdf_dir = pdf_dir or str(Path(str(source)).parent / "PDF")
+        try:
+            if Path(str(source)).is_file():
+                # Caminho feliz: o temp original existe -> COPIA para PDF/ e converte (o original permanece).
+                pdf_path = convert_to_pdf_in_folder(str(source), target_pdf_dir, log)
+            else:
+                # temp_path ausente (removido externamente): resolve uma origem EXISTENTE sem
+                # mover o original e converte por copia (convert_file_to_pdf).
+                resolved = _existing_conversion_source(item, payload.get("temp_folder_path"))
+                if resolved is None:
+                    raise UnsupportedFormat(f"Arquivo nao encontrado para conversao: {source}")
+                log("info", f"temp_path ausente para '{file_name}'; convertendo de origem alternativa: {resolved}", file_id=file_id, automation_id=automation_id)
+                pdf_path = convert_file_to_pdf(resolved, target_pdf_dir, log)
+        except Exception as exc:
+            update_file(session, file_id, {"status": "manual_review", "last_error": f"Falha na conversao PDF para reenvio: {exc}"})
+            log("warning", f"Falha ao converter para PDF (reenvio): {file_name}: {exc}", file_id=file_id, automation_id=automation_id)
+            conversion_failed.append(file_name)
+            continue
+        update_file(
+            session,
+            file_id,
+            # skip_auto_retry: este fluxo ja reenvia em LOTE (create_agent_task abaixo); o flag impede
+            # o PUT /api/files de auto-enfileirar um convert_and_retry_file individual (reenvio duplicado).
+            {"pdf_path": pdf_path, "converted_to_pdf": True, "status": "pending_retry", "playground_status": "Pending", "last_error": None, "skip_auto_retry": True},
+        )
+        resent_names.append(file_name)
+        resend_files.append(
+            {
+                "file_id": file_id,
+                "file_name": Path(pdf_path).name,
+                "path": pdf_path,
+                "temp_path": pdf_path,
+                "original_path": item.get("original_path") or source,
+                "batch_number": 1,
+                "batch_folder_path": target_pdf_dir,
+                "attempts": int(item.get("attempts") or 0) + 1,
+            }
+        )
+    return resend_files, resent_names, conversion_failed
+
+
+def _enqueue_presence_monitor(
+    session: requests.Session,
+    payload: dict[str, Any],
+    user_id: Optional[int],
+    all_files: list[Any],
+    presence_attempt: int,
+    automation_id: Any,
+    log,
+) -> int:
+    """Enfileira um novo monitoramento de presenca encadeado apos o reenvio dos PDFs.
+
+    O monitoramento de presenca espera PRESENCE_MONITORING_TIMEOUT_MINUTES (curto) e verifica
+    SOMENTE se os arquivos existem na tabela (presenca != NotFound). NAO verifica status.
+    Roda para TODOS os arquivos originalmente monitorados (nao apenas os reenviados), de forma
+    idempotente: so reenvia o que realmente faltar.
+    """
+    presence_payload = {
+        **payload,
+        "user_id": user_id,
+        "files": all_files,
+        "presence_only": True,
+        "presence_attempt": presence_attempt,
+        "monitoring_timeout_minutes": PRESENCE_MONITORING_TIMEOUT_MINUTES,
+        "start_monitoring_after_upload": False,
+    }
+    for key in ("completed_batches", "scan_stats", "copy_stats", "task_created_at"):
+        presence_payload.pop(key, None)
+    task_id = create_agent_task(
+        session,
+        "monitor_workspace_files_status",
+        presence_payload,
+        payload.get("max_retries") or payload.get("max_attempts") or 3,
+    )
+    log(
+        "info",
+        f"Monitoramento de presenca enfileirado (tentativa {presence_attempt + 1}/{PRESENCE_MAX_ATTEMPTS}): task {task_id}",
+        automation_id=automation_id,
+        metadata={"presence_attempt": presence_attempt, "files_count": len(all_files)},
+    )
+    return task_id
+
+
 def process_monitor(session: requests.Session, task: dict[str, Any], payload: dict[str, Any], user_id: Optional[int], log) -> None:
     automation_id = payload.get("automation_id")
     should_continue = stop_checker(session, task["id"], automation_id, log)
@@ -876,6 +1034,97 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
     should_continue()
     files = payload.get("files") or []
 
+    # --- Modo presenca: verifica apenas se os arquivos existem, sem checar status ---
+    if result.get("presence_only"):
+        presence_attempt = int(payload.get("presence_attempt") or 0)
+        missing_names: list[str] = list(result.get("missing") or [])
+        present_names: list[str] = list(result.get("present") or [])
+
+        if present_names:
+            log("info", "Arquivos confirmados presentes no workspace.", metadata={"files": present_names}, automation_id=automation_id)
+
+        if not missing_names:
+            log("info", "Todos os arquivos presentes no workspace. Monitoramento de presenca concluido.", automation_id=automation_id)
+            result["retry"] = []
+            result["resent"] = []
+            complete_task(session, task["id"], result)
+            return
+
+        # Ha arquivos ausentes: verificar teto de tentativas.
+        if presence_attempt >= PRESENCE_MAX_ATTEMPTS - 1:
+            log(
+                "warning",
+                f"Teto de tentativas de presenca atingido ({PRESENCE_MAX_ATTEMPTS}). Marcando ausentes como revisao manual.",
+                automation_id=automation_id,
+                metadata={"files": missing_names},
+            )
+            for file_name in missing_names:
+                item = _item_by_name(files, file_name)
+                file_id = item.get("file_id") or item.get("id")
+                update_file(
+                    session,
+                    file_id,
+                    {
+                        "status": "manual_review",
+                        "last_error": f"Arquivo ausente no workspace apos {PRESENCE_MAX_ATTEMPTS} tentativas de presenca.",
+                    },
+                )
+            result["manual_review"] = missing_names
+            result["retry"] = []
+            result["resent"] = []
+            manual_review_task(session, task["id"], "Arquivos ausentes no workspace apos teto de tentativas de presenca.", result)
+            return
+
+        # Ainda dentro do teto: converter para PDF (COPIA) e reenfileirar reenvio + novo monitor de presenca.
+        pdf_dir = _pdf_dir_for_resend(payload, files, missing_names)
+        resend_files, resent_names, conversion_failed = _build_resend_files_from_names(
+            session, files, missing_names, pdf_dir, payload, automation_id, log
+        )
+        for file_name in conversion_failed:
+            item = _item_by_name(files, file_name)
+            file_id = item.get("file_id") or item.get("id")
+            update_file(session, file_id, {"status": "manual_review", "last_error": "Falha na conversao PDF (monitoramento de presenca)."})
+
+        resend_task_id = None
+        if resend_files:
+            resend_payload = {
+                **payload,
+                "user_id": user_id,
+                "files": resend_files,
+                "batch_size": max(1, len(resend_files)),
+                "temp_folder_path": pdf_dir or payload.get("temp_folder_path"),
+                # Reenvio disparado pelo monitor de presenca NAO deve disparar monitoramento de status normal.
+                "start_monitoring_after_upload": False,
+                "monitoring_timeout_minutes": 0,
+            }
+            for key in ("completed_batches", "scan_stats", "copy_stats"):
+                resend_payload.pop(key, None)
+            resend_task_id = create_agent_task(
+                session,
+                "upload_files_to_workspace",
+                resend_payload,
+                payload.get("max_retries") or payload.get("max_attempts") or 3,
+            )
+            log(
+                "info",
+                f"Reenvio de presenca (PDF) enfileirado: task {resend_task_id}",
+                automation_id=automation_id,
+                metadata={"files": [item["file_name"] for item in resend_files]},
+            )
+            # Enfileira novo monitor de presenca para verificar os mesmos arquivos originais.
+            _enqueue_presence_monitor(
+                session, payload, user_id, files,
+                presence_attempt + 1, automation_id, log,
+            )
+
+        result["retry"] = resent_names
+        result["resent"] = [item["file_name"] for item in resend_files]
+        result["resend_task_id"] = resend_task_id
+        result["manual_review"] = conversion_failed
+        complete_task(session, task["id"], result)
+        return
+
+    # --- Modo normal: leitura de status completa com delecao e conversao ---
     ready_names = list(result.get("ready") or [])
     manual_review_names = list(result.get("manual_review") or [])
     to_resend_names = list(result.get("to_resend") or [])
@@ -900,52 +1149,19 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
         )
 
     # Converte os nao-Ready (ja deletados na web, ou ausentes) para PDF na pasta 'PDF' do temp
-    # e reenvia em UMA unica task, sem monitorar novamente.
+    # e reenvia em UMA unica task, sem monitorar o status novamente (o monitor de presenca faz
+    # a garantia pos-reenvio, encadeado abaixo).
     pdf_dir = _pdf_dir_for_resend(payload, files, to_resend_names)
-    resend_files: list[dict[str, Any]] = []
-    resent_names: list[str] = []
-    conversion_failed: list[str] = []
-    for file_name in to_resend_names:
-        should_continue()
-        item = _item_by_name(files, file_name)
-        file_id = item.get("file_id") or item.get("id")
-        source = item.get("temp_path") or item.get("path") or item.get("original_path")
-        if not source:
-            update_file(session, file_id, {"status": "manual_review", "last_error": "Sem caminho de origem para reenvio."})
-            conversion_failed.append(file_name)
-            continue
-        target_pdf_dir = pdf_dir or str(Path(str(source)).parent / "PDF")
-        try:
-            pdf_path = convert_to_pdf_in_folder(str(source), target_pdf_dir, log)
-        except Exception as exc:
-            update_file(session, file_id, {"status": "manual_review", "last_error": f"Falha na conversao PDF para reenvio: {exc}"})
-            log("warning", f"Falha ao converter para PDF (reenvio): {file_name}: {exc}", file_id=file_id, automation_id=automation_id)
-            conversion_failed.append(file_name)
-            continue
-        update_file(
-            session,
-            file_id,
-            {"pdf_path": pdf_path, "converted_to_pdf": True, "status": "pending_retry", "playground_status": "Pending", "last_error": None},
-        )
-        resent_names.append(file_name)
-        resend_files.append(
-            {
-                "file_id": file_id,
-                "file_name": Path(pdf_path).name,
-                "path": pdf_path,
-                "temp_path": pdf_path,
-                "original_path": item.get("original_path") or source,
-                "batch_number": 1,
-                "batch_folder_path": target_pdf_dir,
-                "attempts": int(item.get("attempts") or 0) + 1,
-            }
-        )
+    resend_files, resent_names, conversion_failed = _build_resend_files_from_names(
+        session, files, to_resend_names, pdf_dir, payload, automation_id, log
+    )
 
     for file_name in conversion_failed:
         if file_name not in manual_review_names:
             manual_review_names.append(file_name)
 
     resend_task_id = None
+    presence_task_id = None
     if resend_files:
         resend_payload = {
             **payload,
@@ -953,7 +1169,7 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
             "files": resend_files,
             "batch_size": max(1, len(resend_files)),
             "temp_folder_path": pdf_dir or payload.get("temp_folder_path"),
-            # Reenvio NAO deve disparar novo monitoramento.
+            # Reenvio NAO deve disparar novo monitoramento de status (o de presenca e enfileirado abaixo).
             "start_monitoring_after_upload": False,
             "monitoring_timeout_minutes": 0,
         }
@@ -967,9 +1183,18 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
         )
         log(
             "info",
-            f"Reenvio (PDF) enfileirado sem novo monitoramento: task {resend_task_id}",
+            f"Reenvio (PDF) enfileirado sem monitoramento de status: task {resend_task_id}",
             automation_id=automation_id,
             metadata={"files": [item["file_name"] for item in resend_files]},
+        )
+
+    # Enfileira monitoramento de presenca para TODOS os arquivos originalmente monitorados,
+    # garantindo que cada um chegou ao workspace (independente de ter sido reenviado ou nao).
+    # Idempotente: so reenviara o que realmente faltar.
+    if files:
+        presence_task_id = _enqueue_presence_monitor(
+            session, payload, user_id, files,
+            0, automation_id, log,
         )
 
     # Alinha o resultado com o que o backend (update_files_from_result) usa para gravar status:
@@ -978,6 +1203,7 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
     result["manual_review"] = manual_review_names
     result["resent"] = [item["file_name"] for item in resend_files]
     result["resend_task_id"] = resend_task_id
+    result["presence_task_id"] = presence_task_id
     if manual_review_names and not resend_files:
         result["status"] = "manual_review"
         manual_review_task(session, task["id"], "Monitoramento terminou com arquivos em revisao manual.", result)
@@ -1009,19 +1235,21 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
         raise ManualReviewRequired("Maximo de tentativas atingido para reenvio.")
 
     path = Path(str(source))
-    # Fallback: se o temp_path original nao existe mais (o process_monitor pode ter movido
-    # o arquivo de lote_XXX/ para a subpasta PDF/ via shutil.move), procura o mesmo nome
-    # em PDF/ dentro do diretorio pai antes de falhar a conversao.
+    # Fallback robusto: o temp_path pode ter sido removido externamente. Como convert_to_pdf_in_folder
+    # agora COPIA (shutil.copy2) sem remover o original, a ausencia do temp_path e menos provavel,
+    # mas o fallback permanece para tratar remocoes externas. Resolve uma origem existente (PDF ja
+    # convertido/copiado na pasta PDF/, ou o original preservado na pasta monitorada) antes de
+    # falhar a conversao.
     if not path.exists():
-        pdf_sibling = path.parent / "PDF" / path.name
-        if pdf_sibling.exists():
+        resolved = _existing_conversion_source(payload, payload.get("temp_folder_path"))
+        if resolved and Path(resolved) != path:
             log(
                 "info",
-                f"Arquivo nao encontrado no temp_path original; usando versao em PDF/: {pdf_sibling.name}",
+                f"Arquivo nao encontrado no temp_path original; usando origem alternativa: {Path(resolved).name}",
                 file_id=file_id,
                 automation_id=payload.get("automation_id"),
             )
-            path = pdf_sibling
+            path = Path(resolved)
     if path.suffix.lower() == ".pdf":
         pdf_path = str(path)
         log("info", "Arquivo ja e PDF; reenvio sem nova conversao.", file_id=file_id, automation_id=payload.get("automation_id"))
@@ -1039,6 +1267,9 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
             "attempts": next_attempt,
             "status": "pending_retry",
             "last_error": None,
+            # Este handler ja enfileira o upload individual logo abaixo; o flag evita que o PUT
+            # auto-enfileire OUTRO convert_and_retry_file (loop/duplicacao de reenvio).
+            "skip_auto_retry": True,
         },
     )
     upload_payload = {

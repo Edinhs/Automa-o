@@ -351,7 +351,15 @@ def update_file(id: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404)
     
     clean_data = clean_payload(data)
-    status_changed_to_retry = clean_data.get("status") == "pending_retry" and f.status != "pending_retry"
+    # skip_auto_retry: o agente (process_monitor / process_convert_retry) JA faz a conversao e o
+    # reenvio em lote; nao disparar o convert_and_retry_file automatico aqui evita o reenvio
+    # DUPLICADO (lote + individual). O caminho MANUAL do dashboard (PUT sem o flag) continua
+    # disparando o retry normalmente. O flag vem no payload bruto (nao e coluna, some no clean_payload).
+    status_changed_to_retry = (
+        clean_data.get("status") == "pending_retry"
+        and f.status != "pending_retry"
+        and not data.get("skip_auto_retry")
+    )
     
     for key, value in clean_data.items():
         setattr(f, key, value)

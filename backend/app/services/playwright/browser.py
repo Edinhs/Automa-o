@@ -109,20 +109,60 @@ def open_persistent_chromium(
     )
 
 
-def first_visible(locator_factories: Iterable[Callable], timeout_ms: int = 1500):
+# Timeout curto e fixo para sondar visibilidade/estado de cada candidato durante a varredura
+# por um elemento habilitado — independente do timeout do clique, para nao somar esperas longas
+# ao percorrer varios matches.
+_ENABLED_PROBE_TIMEOUT_MS = 500
+# Numero maximo de matches inspecionados por factory ao exigir habilitado (o alvo real costuma
+# estar entre os primeiros; evita varrer listas grandes).
+_MAX_ENABLED_CANDIDATES = 8
+
+
+def first_visible(
+    locator_factories: Iterable[Callable],
+    timeout_ms: int = 1500,
+    *,
+    require_enabled: bool = False,
+):
+    """Primeiro locator VISIVEL (e HABILITADO, se require_enabled) entre os factories.
+
+    Com require_enabled=True, varre ate alguns matches de cada factory e pula os DESABILITADOS
+    (ex.: o submit "Upload Files", que fica disabled ate um arquivo ser anexado). Sem isso, o
+    .first podia resolver no botao desabilitado e o .click() seguinte estourava o timeout esperando
+    ele habilitar. is_enabled() retorna True para elementos nao-desabilitaveis (links/texto), entao
+    navegacao por link/texto nao e afetada.
+    """
     for locator_factory in locator_factories:
         try:
             locator = locator_factory()
-            first = locator.first
-            if first.count() and first.is_visible(timeout=timeout_ms):
-                return first
         except Exception:
             continue
+        if not require_enabled:
+            try:
+                first = locator.first
+                if first.count() and first.is_visible(timeout=timeout_ms):
+                    return first
+            except Exception:
+                pass
+            continue
+        try:
+            count = locator.count()
+        except Exception:
+            count = 0
+        for index in range(min(count, _MAX_ENABLED_CANDIDATES)):
+            candidate = locator.nth(index)
+            try:
+                if candidate.is_visible(timeout=_ENABLED_PROBE_TIMEOUT_MS) and candidate.is_enabled(
+                    timeout=_ENABLED_PROBE_TIMEOUT_MS
+                ):
+                    return candidate
+            except Exception:
+                continue
     return None
 
 
 def click_first(locator_factories: Iterable[Callable], timeout_ms: int = 3000) -> bool:
-    locator = first_visible(locator_factories, timeout_ms=timeout_ms)
+    locator = first_visible(locator_factories, timeout_ms=timeout_ms, require_enabled=True)
     if not locator:
         return False
     locator.click(timeout=timeout_ms)
@@ -130,7 +170,7 @@ def click_first(locator_factories: Iterable[Callable], timeout_ms: int = 3000) -
 
 
 def fill_first(locator_factories: Iterable[Callable], value: str, timeout_ms: int = 3000) -> bool:
-    locator = first_visible(locator_factories, timeout_ms=timeout_ms)
+    locator = first_visible(locator_factories, timeout_ms=timeout_ms, require_enabled=True)
     if not locator:
         return False
     locator.fill(value, timeout=timeout_ms)

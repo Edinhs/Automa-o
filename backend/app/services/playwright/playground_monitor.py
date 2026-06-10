@@ -130,6 +130,31 @@ def header_index(headers: list[str], aliases: list[str]) -> int | None:
     return None
 
 
+def row_name_cell(row: dict[str, Any]) -> str:
+    """Conteudo NORMALIZADO da coluna Name da linha estruturada (ou '' se a coluna nao for mapeavel).
+
+    Usado para casar o arquivo pela IGUALDADE exata do nome (e nao por substring), evitando que um
+    arquivo cujo nome e substring de outro (ex.: 'X.doc' vs 'X.doc.docx', ou o original em Error e o
+    PDF convertido em Ready compartilhando o nome-base) herde o status da linha errada.
+    """
+    cells = [clean_text(cell) for cell in row.get("cells") or []]
+    headers = [clean_text(header) for header in row.get("headers") or []]
+    name_index = header_index(headers, NAME_HEADERS)
+    if name_index is not None and name_index < len(cells):
+        return cells[name_index]
+    return ""
+
+
+def pick_best_status(entries: list[dict[str, str]]) -> dict[str, str]:
+    """Dentre TODAS as linhas que casam um mesmo nome, escolhe o status com PREFERENCIA por Ready
+    (reusa a ordem de best_status). Garante o invariante de seguranca: um nome que tenha QUALQUER
+    linha Ready no workspace e classificado Ready e NUNCA entra em 'deletable'."""
+    best = {"status": "NotFound", "raw": "", "status_text": ""}
+    for entry in entries:
+        best = best_status(best, entry)
+    return best
+
+
 def status_text_from_row(row: dict[str, Any], expected_name: str) -> str:
     cells = [clean_text(cell) for cell in row.get("cells") or [] if clean_text(cell)]
     headers = [clean_text(header) for header in row.get("headers") or [] if clean_text(header)]
@@ -138,10 +163,11 @@ def status_text_from_row(row: dict[str, Any], expected_name: str) -> str:
         return cells[status_index]
 
     name_index = header_index(headers, NAME_HEADERS)
+    target = clean_text(expected_name)
     for index, cell in enumerate(cells):
         if name_index is not None and index == name_index:
             continue
-        if expected_name.lower() in cell.lower():
+        if cell == target:  # IGUALDADE exata (era substring): nao descartar uma celula de status por engano.
             continue
         if normalize_status(cell) != "Unknown":
             return cell
@@ -167,28 +193,42 @@ def read_file_statuses(page, expected_names: list[str]) -> dict[str, dict[str, s
         row_texts = [page_text(page)]
 
     for name in expected_names:
-        match_text = ""
-        status_text = ""
+        target = clean_text(name)
+        entries: list[dict[str, str]] = []
+
+        # 1) Match EXATO pela coluna Name das linhas estruturadas; varre TODAS (sem break). Se houver
+        #    linhas duplicadas/colidentes do MESMO nome, todas entram e pick_best_status prefere Ready.
         for row in structured_rows:
-            row_text = clean_text(row.get("text") or " ".join(row.get("cells") or []))
-            if name.lower() in row_text.lower():
-                match_text = row_text
+            if row_name_cell(row) == target:
                 status_text = status_text_from_row(row, name)
-                break
-        if not match_text:
+                raw = clean_text(row.get("text") or " ".join(row.get("cells") or []))
+                entries.append({
+                    "status": normalize_status(status_text or raw),
+                    "raw": raw,
+                    "status_text": status_text or raw,
+                })
+
+        # 2) Fallback (coluna Name nao mapeavel): linhas estruturadas cujo texto contenha o nome.
+        #    Mantem substring, mas coleta TODAS + preferencia por Ready -> nunca rebaixa um Ready.
+        if not entries:
+            for row in structured_rows:
+                raw = clean_text(row.get("text") or " ".join(row.get("cells") or []))
+                if target.lower() in raw.lower():
+                    status_text = status_text_from_row(row, name)
+                    entries.append({
+                        "status": normalize_status(status_text or raw),
+                        "raw": raw,
+                        "status_text": status_text or raw,
+                    })
+
+        # 3) Ultimo recurso: inner_text das linhas (sem estrutura de colunas), tambem com Ready-preference.
+        if not entries:
             for row_text in row_texts:
-                if name.lower() in row_text.lower():
-                    match_text = clean_text(row_text)
-                    status_text = match_text
-                    break
-        if match_text:
-            statuses[name] = {
-                "status": normalize_status(status_text or match_text),
-                "raw": match_text,
-                "status_text": status_text or match_text,
-            }
-        else:
-            statuses[name] = {"status": "NotFound", "raw": "", "status_text": ""}
+                cleaned = clean_text(row_text)
+                if target.lower() in cleaned.lower():
+                    entries.append({"status": normalize_status(cleaned), "raw": cleaned, "status_text": cleaned})
+
+        statuses[name] = pick_best_status(entries) if entries else {"status": "NotFound", "raw": "", "status_text": ""}
     return statuses
 
 
@@ -468,20 +508,24 @@ def find_file_row(page, file_name: str):
 
 
 def click_delete_confirm(page) -> bool:
-    """Confirma a delecao, dando preferencia a um botao DENTRO de um modal/dialog.
+    """Confirma a delecao SOMENTE quando existe um modal/dialog de confirmacao real.
 
-    Restringir ao dialog evita clicar num "Delete"/"OK"/"Confirm" perdido em outro ponto da
-    pagina (falso positivo). Se nao houver dialog, tenta a pagina inteira como ultimo recurso.
+    Comportamento confirmado na UI atual do Playground (AWS Cloudscape): o clique no icone de
+    delete da coluna Actions remove o arquivo IMEDIATAMENTE, sem modal de confirmacao. Por isso
+    NAO ha fallback de escopo na pagina inteira: um get_by_role de botao "Delete" solto casaria
+    por substring com os botoes 'Delete "<arquivo>"' das DEMAIS linhas (cada linha tem o seu) e
+    poderia apagar um arquivo Ready logo apos a delecao do alvo. A busca fica restrita a um
+    dialog/alertdialog de fato presente; se nao houver, retorna False (delecao ja foi direta).
+    Mantido por compatibilidade caso a UI volte a exibir um modal no futuro.
     """
     scopes: list[Any] = []
     for role in ("dialog", "alertdialog"):
         try:
             candidate = page.get_by_role(role)
-            if candidate.count():
+            if candidate.count() and candidate.first.is_visible(timeout=500):
                 scopes.append(candidate.first)
         except Exception:
             continue
-    scopes.append(page)
     for scope in scopes:
         try:
             if click_first(
@@ -537,8 +581,13 @@ def click_row_delete_control(row, log: Callable, file_name: str) -> bool:
     apaga e reenvia por engano.
     """
     # Caminho preciso (AWS Cloudscape): o botao de deletar tem aria-label/title = 'Delete "<arquivo>"'.
-    # Casar pelo NOME do arquivo no aria-label e cirurgico; combinado ao escopo de linha, e exato.
+    # Confirmado no DOM real do Playground (botao <button> com svg filho; o nome do arquivo entra
+    # entre aspas duplas no aria-label E no title). Mirar o rotulo COMPLETO 'Delete "<arquivo>"' e
+    # o seletor mais cirurgico possivel; combinado ao escopo de linha, casa exatamente este arquivo.
+    exact_aria = f'Delete "{file_name}"'
+    escaped_aria = exact_aria.replace("'", "\\'")
     for lookup in (
+        lambda: row.locator(f"button[aria-label='{escaped_aria}'], button[title='{escaped_aria}']"),
         lambda: row.get_by_role("button", name=re.compile(re.escape(file_name))),
         lambda: row.get_by_role("button", name=re.compile(r"Delete", re.IGNORECASE)),
         lambda: row.locator("button[aria-label*='Delete' i], button[title*='Delete' i]"),
@@ -650,15 +699,15 @@ def delete_one_with_verify(
             log("warning", f"Delete ABORTADO: linha localizada ('{live_name}') != alvo ('{target}'); revisao manual.")
             return False
         # Trava de seguranca: relê o status DA PROPRIA linha imediatamente antes de clicar.
-        # So deleta se o status for Error ou Processing. Ready NUNCA e apagado.
-        # Pending/Unknown/NotFound tambem NAO sao deletados aqui: se chegaram ate este ponto
-        # por engano (leitura equivocada a montante), o abort impede a exclusao indevida.
+        # So deleta se o status for Error, Processing ou Pending. Ready NUNCA e apagado.
+        # Unknown/NotFound tambem NAO sao deletados aqui: se chegaram ate este ponto por engano
+        # (leitura equivocada a montante), o abort impede a exclusao indevida.
         live_status = normalize_status(live.get("status") or live.get("text") or "")
         if live_status == "Ready":
             log("warning", f"Delete ABORTADO: a linha de '{target}' esta Ready (trava de seguranca).")
             return False
-        if live_status not in ("Error", "Processing"):
-            log("warning", f"Delete ABORTADO: status '{live_status}' de '{target}' nao e Error/Processing (trava de seguranca).")
+        if live_status not in ("Error", "Processing", "Pending"):
+            log("warning", f"Delete ABORTADO: status '{live_status}' de '{target}' nao e Error/Processing/Pending (trava de seguranca).")
             return False
         if not click_row_delete_control(row, log, target):
             return False
@@ -701,6 +750,90 @@ def delete_all_to_fix(
     return deleted, failed
 
 
+def _monitor_presence_only(
+    task_id: int,
+    user_id: int | None,
+    payload: dict[str, Any],
+    log: Callable,
+    should_continue: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Verifica PRESENCA (nao status) de todos os arquivos no workspace.
+
+    Modo leve pos-reenvio: percorre todas as paginas e reporta quais arquivos
+    existem (qualquer status != NotFound) e quais estao ausentes. NAO deleta nada,
+    NAO verifica integridade de Ready. Apenas: nome presente ou ausente.
+
+    Usado para garantir que os PDFs reenviados foram realmente inseridos na tabela
+    do workspace antes de encerrar o ciclo. Arquivos ausentes sao marcados para
+    novo reenvio (com teto de tentativas).
+    """
+    workspace_name = str(payload.get("workspace_name") or "").strip()
+    if not workspace_name:
+        raise PlaywrightAutomationError("Payload sem workspace_name (presence_only).")
+    files = payload.get("files") or []
+    expected_names = [name for name in [expected_file_name(item) for item in files] if name]
+    if not expected_names:
+        raise PlaywrightAutomationError("Payload sem arquivos para monitorar (presence_only).")
+
+    timeout_minutes = int(payload.get("monitoring_timeout_minutes") or settings.DEFAULT_MONITORING_TIMEOUT_MINUTES)
+    task_created_at = payload.get("task_created_at")
+
+    # Aguarda a janela configurada (tipicamente curta — as linhas aparecem como Pending logo apos o upload).
+    wait_monitor_delay(timeout_minutes, log, should_continue=should_continue, task_created_at=task_created_at)
+
+    browser = None
+    try:
+        check_continue(should_continue)
+        browser = open_persistent_chromium(
+            user_id,
+            headless=payload.get("headless"),
+            browser_channel=payload.get("browser_channel"),
+        )
+        page = browser.page
+        presence_attempt = int(payload.get("presence_attempt") or 0)
+        log("info", f"Chromium iniciado (monitoramento de presenca, tentativa {presence_attempt + 1}).")
+        check_continue(should_continue)
+        open_workspace_for_monitor(page, payload, workspace_name, log)
+        check_continue(should_continue)
+        open_files_tab(page, log)
+
+        # Leitura de todas as paginas — so interessa presenca (status != NotFound).
+        statuses = read_all_pages_statuses(page, expected_names, log, should_continue=should_continue)
+        for name in expected_names:
+            s = statuses.get(name, {}).get("status")
+            log(
+                "info",
+                f"Presenca: {name} = {'presente' if s != 'NotFound' else 'AUSENTE'} (status: {s})",
+                file_id=_file_id_for_name(files, name),
+                metadata=statuses.get(name),
+            )
+
+        present = [n for n in expected_names if statuses.get(n, {}).get("status") != "NotFound"]
+        missing = [n for n in expected_names if statuses.get(n, {}).get("status") == "NotFound"]
+
+        if present:
+            log("info", "Arquivos presentes no workspace.", metadata={"files": present})
+        if missing:
+            log("warning", "Arquivos AUSENTES no workspace (nao encontrados na tabela).", metadata={"files": missing})
+
+        return {
+            "status": "completed",
+            "present": present,
+            "missing": missing,
+            "to_resend": missing,
+            "presence_only": True,
+            "statuses": statuses,
+        }
+    except Exception:
+        if browser and browser.page:
+            safe_error_screenshot(browser.page, task_id, log)
+        raise
+    finally:
+        if browser:
+            browser.close()
+            log("info", "Navegador fechado (monitoramento de presenca).")
+
+
 def monitor_workspace_files_status(
     task_id: int,
     user_id: int | None,
@@ -708,6 +841,11 @@ def monitor_workspace_files_status(
     log: Callable,
     should_continue: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
+    # Modo presenca: apenas verifica se os arquivos existem na tabela (qualquer status != NotFound).
+    # Disparado apos o reenvio dos PDFs para garantir que todos chegaram ao workspace.
+    if payload.get("presence_only"):
+        return _monitor_presence_only(task_id, user_id, payload, log, should_continue)
+
     workspace_name = str(payload.get("workspace_name") or "").strip()
     if not workspace_name:
         raise PlaywrightAutomationError("Payload sem workspace_name.")
@@ -748,13 +886,11 @@ def monitor_workspace_files_status(
             )
 
         ready = [name for name in expected_names if statuses.get(name, {}).get("status") == "Ready"]
-        # Pending = acao manual (nao tratar automaticamente).
-        pending = [name for name in expected_names if statuses.get(name, {}).get("status") == "Pending"]
-        # Deletar APENAS Error e Processing. NotFound/Unknown nao existem na tabela; Pending fica
-        # para revisao manual. Nenhum desses tres entra em 'deletable'.
-        error_processing = [
+        # Deletar Error, Processing E Pending. Ready NUNCA e apagado. NotFound/Unknown nao existem
+        # na tabela (ou nao foram reconhecidos) e seguem para revisao manual, nunca para delecao.
+        deletable = [
             name for name in expected_names
-            if statuses.get(name, {}).get("status") in ("Error", "Processing")
+            if statuses.get(name, {}).get("status") in ("Error", "Processing", "Pending")
         ]
         not_found = [
             name for name in expected_names
@@ -768,18 +904,16 @@ def monitor_workspace_files_status(
 
         if ready:
             log("info", "Arquivos prontos (Ready).", metadata={"files": ready})
-        if pending:
-            log("warning", "Arquivos em Pending: tratados como acao manual.", metadata={"files": pending})
-        if error_processing:
-            log("warning", "Arquivos Error/Processing: deletar na web + converter PDF + reenviar.", metadata={"files": error_processing})
+        if deletable:
+            log("warning", "Arquivos Error/Processing/Pending: deletar na web + converter PDF + reenviar.", metadata={"files": deletable})
         if not_found:
             log("warning", "Arquivos nao encontrados na tabela (NotFound): reenviar sem deletar.", metadata={"files": not_found})
         if unknown:
             log("warning", "Arquivos com status desconhecido (Unknown): revisao manual.", metadata={"files": unknown})
 
-        # --- ETAPA (a): deletar TODOS os Error/Processing, confirmando via F5 ---
+        # --- ETAPA (a): deletar TODOS os Error/Processing/Pending, confirmando via F5 ---
         deleted, delete_failed = delete_all_to_fix(
-            page, error_processing, payload, workspace_name, log, should_continue=should_continue
+            page, deletable, payload, workspace_name, log, should_continue=should_continue
         )
         if delete_failed:
             log(
@@ -817,7 +951,9 @@ def monitor_workspace_files_status(
         # ausentes (NotFound) ou Ready que se perderam. Delete nao confirmado NAO e reenviado:
         # vira revisao manual, para nunca duplicar o arquivo no workspace (decisao do usuario).
         to_resend = list(dict.fromkeys(deleted + not_found + ready_lost))
-        manual_review = list(dict.fromkeys(pending + delete_failed + unknown))
+        # Pending agora entra em 'deletable' (deletado + reenviado como os demais); o que sobra
+        # para revisao manual sao apenas delecoes nao confirmadas e status desconhecidos.
+        manual_review = list(dict.fromkeys(delete_failed + unknown))
 
         return {
             "status": "completed",
