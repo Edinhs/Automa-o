@@ -498,6 +498,17 @@ def prepare_folder_upload_payload(
         return payload, {"status": "folder_scan_failed", "message": message, "folder_path": normalized_folder, "path_diagnostics": diagnostics}
 
     scan_stats["matched_source_files"] = len(candidate_files)
+    found_files = [source.name for source in candidate_files]
+    log(
+        "info",
+        f"Arquivos encontrados na pasta monitorada: {len(candidate_files)}",
+        automation_id=automation_id,
+        metadata={
+            "folder_path": normalized_folder,
+            "found_count": len(candidate_files),
+            "found_files": found_files,  # lista COMPLETA, sem truncar
+        },
+    )
     full_execution = bool(payload.get("full_execution"))
     baseline = uploaded_content_baseline(session, automation_id, log)
     selected_files: list[Path] = []
@@ -902,10 +913,29 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
     resend_files: list[dict[str, Any]] = []
     resent_names: list[str] = []
     conversion_failed: list[str] = []
+    max_attempts = int(payload.get("max_retries") or payload.get("max_attempts") or 3)
     for file_name in to_resend_names:
         should_continue()
         item = _item_by_name(files, file_name)
         file_id = item.get("file_id") or item.get("id")
+        attempts = int(item.get("attempts") or 0)
+        if attempts >= max_attempts:
+            # Limite de reenvios atingido: nao reenvia de novo (encerra o loop monitor<->reenvio
+            # para este arquivo) e marca para revisao manual.
+            update_file(
+                session,
+                file_id,
+                {"status": "manual_review", "last_error": f"Maximo de tentativas de reenvio atingido ({attempts}/{max_attempts})."},
+            )
+            if file_name not in manual_review_names:
+                manual_review_names.append(file_name)
+            log(
+                "warning",
+                f"Maximo de tentativas de reenvio atingido para {file_name} ({attempts}/{max_attempts}); revisao manual.",
+                file_id=file_id,
+                automation_id=automation_id,
+            )
+            continue
         source = item.get("temp_path") or item.get("path") or item.get("original_path")
         if not source:
             update_file(session, file_id, {"status": "manual_review", "last_error": "Sem caminho de origem para reenvio."})
@@ -950,9 +980,11 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
             "files": resend_files,
             "batch_size": max(1, len(resend_files)),
             "temp_folder_path": pdf_dir or payload.get("temp_folder_path"),
-            # Reenvio NAO deve disparar novo monitoramento.
-            "start_monitoring_after_upload": False,
-            "monitoring_timeout_minutes": 0,
+            # Reenvio dispara uma releitura de confirmacao (monitor de follow-up) para garantir
+            # que os reenviados entraram no workspace. O loop monitor<->reenvio e limitado pelo
+            # cap de tentativas por arquivo (max_attempts), entao nao repete infinitamente.
+            "start_monitoring_after_upload": True,
+            "is_resend": True,
         }
         for key in ("completed_batches", "scan_stats", "copy_stats"):
             resend_payload.pop(key, None)
@@ -964,7 +996,7 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
         )
         log(
             "info",
-            f"Reenvio (PDF) enfileirado sem novo monitoramento: task {resend_task_id}",
+            f"Reenvio (PDF) enfileirado com releitura de confirmacao: task {resend_task_id}",
             automation_id=automation_id,
             metadata={"files": [item["file_name"] for item in resend_files]},
         )

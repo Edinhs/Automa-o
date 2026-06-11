@@ -515,8 +515,8 @@ def complete_task(id: int, data: Optional[dict] = None, db: Session = Depends(ge
                 WorkspaceFile.detection_task_id == task.id,
                 WorkspaceFile.is_deleted == False,
             ).all()
+            canonical_files = []
             if files:
-                canonical_files = []
                 for f in files:
                     canonical_files.append({
                         "file_id": f.id,
@@ -527,6 +527,25 @@ def complete_task(id: int, data: Optional[dict] = None, db: Session = Depends(ge
                         "status": f.status,
                         "playground_status": f.playground_status,
                     })
+            elif payload.get("is_resend") and payload.get("files"):
+                # Reenvio: os arquivos reaproveitam os file_id originais, entao detection_task_id
+                # nao casa esta task. Usa a lista do proprio payload (nomes/caminhos do PDF) para
+                # enfileirar o monitor de follow-up que confirma se entraram no workspace. Preserva
+                # attempts para o cap do loop monitor<->reenvio no agente.
+                for item in payload["files"]:
+                    if not isinstance(item, dict):
+                        continue
+                    canonical_files.append({
+                        "file_id": item.get("file_id") or item.get("id"),
+                        "file_name": item.get("file_name"),
+                        "path": item.get("path") or item.get("temp_path"),
+                        "temp_path": item.get("temp_path") or item.get("path"),
+                        "original_path": item.get("original_path"),
+                        "status": "uploaded",
+                        "playground_status": "Pending",
+                        "attempts": item.get("attempts"),
+                    })
+            if canonical_files:
                 monitor_payload = {
                     **payload,
                     "files": canonical_files,
