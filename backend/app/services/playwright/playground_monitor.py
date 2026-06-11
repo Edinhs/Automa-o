@@ -26,6 +26,10 @@ NAME_HEADERS = ["name", "nome"]
 STATUS_HEADERS = ["status"]
 FILES_TABLE_TEXTS = ["Name", "Status", "Upload date", "Size", "Actions"]
 FOUND_STATUSES = {"Ready", "Error", "Processing", "Pending"}
+# Numero de vezes que a pagina e recarregada e relida quando algum arquivo cai em status
+# invalido (NotFound/Unknown). So os 4 status reais do Playground sao aceitos como leitura
+# final; NotFound/Unknown sao tratados como leitura transitoria que o reload deve resolver.
+MAX_STATUS_RELOAD_ATTEMPTS = 3
 
 
 def check_continue(should_continue: Callable[[], bool] | None) -> None:
@@ -193,6 +197,11 @@ def read_file_statuses(page, expected_names: list[str]) -> dict[str, dict[str, s
 
 def statuses_have_expected_rows(statuses: dict[str, dict[str, str]]) -> bool:
     return any(data.get("status") in FOUND_STATUSES for data in statuses.values())
+
+
+def names_with_invalid_status(statuses: dict[str, dict[str, str]], expected_names: list[str]) -> list[str]:
+    """Arquivos cujo status lido NAO e um dos 4 validos (cobre NotFound e Unknown)."""
+    return [name for name in expected_names if statuses.get(name, {}).get("status") not in FOUND_STATUSES]
 
 
 def wait_for_expected_rows(
@@ -621,8 +630,34 @@ def monitor_workspace_files_status(
         check_continue(should_continue)
         open_files_tab(page, log)
 
-        # 2) Leitura unica de status, percorrendo todas as paginas (">" ate nao carregar mais).
+        # 2) Leitura de status, percorrendo todas as paginas (">" ate nao carregar mais).
+        # So aceitamos os 4 status reais do Playground (Ready/Error/Processing/Pending). Se algum
+        # arquivo cair em NotFound/Unknown, recarregamos a pagina e relemos ate MAX_STATUS_RELOAD_ATTEMPTS.
         statuses = read_all_pages_statuses(page, expected_names, log, should_continue=should_continue)
+        reload_attempt = 0
+        while reload_attempt < MAX_STATUS_RELOAD_ATTEMPTS:
+            invalid = names_with_invalid_status(statuses, expected_names)
+            if not invalid:
+                break
+            reload_attempt += 1
+            log(
+                "warning",
+                f"Status invalido (NotFound/Unknown) para {len(invalid)} arquivo(s); "
+                f"recarregando e relendo (tentativa {reload_attempt}/{MAX_STATUS_RELOAD_ATTEMPTS}).",
+                metadata={"files": invalid},
+            )
+            # f5_reopen_files ja recarrega a pagina, refaz o login se preciso e reabre a aba Files.
+            f5_reopen_files(page, payload, workspace_name, log, should_continue)
+            fresh = read_all_pages_statuses(page, expected_names, log, should_continue=should_continue)
+            # Mescla preservando o melhor status por arquivo: um arquivo ja resolvido (ex.: Ready/
+            # Pending) nao deve regredir para NotFound por uma glitch transitoria do reload.
+            statuses = {
+                name: best_status(
+                    statuses.get(name, {"status": "NotFound"}),
+                    fresh.get(name, {"status": "NotFound"}),
+                )
+                for name in expected_names
+            }
         for name in expected_names:
             log(
                 "info",
@@ -636,7 +671,9 @@ def monitor_workspace_files_status(
         pending = [name for name in expected_names if statuses.get(name, {}).get("status") == "Pending"]
         # Todo nao-Ready que nao for Pending entra no tratamento (Error/Processing/NotFound/Unknown).
         to_fix = [name for name in expected_names if name not in ready and name not in pending]
-        not_found = [name for name in to_fix if statuses.get(name, {}).get("status") == "NotFound"]
+        # NotFound/Unknown que sobreviveram as recargas: arquivo nao confirmado na web, reenviado
+        # sem tentar deletar. Error/Processing (deletable): deletar na web + converter + reenviar.
+        not_found = [name for name in to_fix if statuses.get(name, {}).get("status") in {"NotFound", "Unknown"}]
         deletable = [name for name in to_fix if name not in not_found]
 
         if ready:
