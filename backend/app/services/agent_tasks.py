@@ -7,12 +7,15 @@ def enqueue_task(
     db: Session,
     task_type: str,
     payload: dict,
-    created_by_id: int = None
+    created_by_id: int = None,
+    max_attempts: int = 3
 ):
     task = AgentTask(
         task_type=task_type,
+        status="pending",
         payload_json=json.dumps(payload),
-        created_by_id=created_by_id
+        created_by_id=created_by_id,
+        max_attempts=max_attempts
     )
     db.add(task)
     db.commit()

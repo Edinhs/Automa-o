@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 from datetime import datetime
-from pathlib import Path
 from typing import Iterable
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.timezone import sao_paulo_utc_iso
-from app.core.config import resolve_backend_path, runtime_path, settings
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.agent import AgentTask, LocalAgent
 from app.models.automation import Automation
@@ -52,146 +49,6 @@ AUTOMATION_FIELDS = {
     "full_execution",
     "config_json",
 }
-
-
-def scan_monitored_folder(folder: Path, enabled_exts: set[str]) -> tuple[list[Path], dict]:
-    files: list[Path] = []
-    ignored_extensions: set[str] = set()
-    inaccessible_dirs: list[dict] = []
-    directories_scanned = 0
-    files_seen = 0
-
-    stack = [folder]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as entries:
-                current_entries = list(entries)
-        except OSError as exc:
-            if current == folder:
-                raise
-            inaccessible_dirs.append({"path": str(current), "error": str(exc)})
-            continue
-
-        directories_scanned += 1
-        for entry in current_entries:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    stack.append(Path(entry.path))
-                    continue
-                if not entry.is_file(follow_symlinks=False):
-                    continue
-            except OSError as exc:
-                inaccessible_dirs.append({"path": entry.path, "error": str(exc)})
-                continue
-
-            files_seen += 1
-            path = Path(entry.path)
-            extension = path.suffix.lower() or "<no_extension>"
-            if path.suffix.lower() in enabled_exts:
-                files.append(path)
-            else:
-                ignored_extensions.add(extension)
-
-    return files, {
-        "directories_scanned": directories_scanned,
-        "files_seen": files_seen,
-        "matched_files": len(files),
-        "allowed_extensions": sorted(enabled_exts),
-        "ignored_extensions": sorted(ignored_extensions),
-        "inaccessible_dirs_count": len(inaccessible_dirs),
-        "inaccessible_dirs": inaccessible_dirs[:20],
-    }
-
-
-def no_files_message(scan_stats: dict) -> str:
-    allowed = ", ".join(scan_stats.get("allowed_extensions") or []) or "none"
-    ignored = ", ".join((scan_stats.get("ignored_extensions") or [])[:12]) or "none"
-    return (
-        "No compatible files found in monitored folder/subfolders. "
-        f"Folders scanned: {scan_stats.get('directories_scanned', 0)}; "
-        f"files seen: {scan_stats.get('files_seen', 0)}; "
-        f"allowed extensions: {allowed}; ignored extensions: {ignored}."
-    )
-
-
-def staging_base_path(value: str | None) -> Path:
-    normalized = normalize_folder_path(value)
-    if normalized:
-        path = Path(normalized)
-        return path if path.is_absolute() else resolve_backend_path(normalized)
-    return runtime_path("TEMP_PATH")
-
-
-def unique_staging_path(staging_dir: Path, source: Path, used_names: set[str]) -> Path:
-    name = source.name
-    stem = source.stem or "file"
-    suffix = source.suffix
-    index = 1
-    while name.lower() in used_names or (staging_dir / name).exists():
-        name = f"{stem}_{index}{suffix}"
-        index += 1
-    used_names.add(name.lower())
-    return staging_dir / name
-
-
-def copy_files_to_staging(
-    *,
-    automation_id: int,
-    source_files: list[Path],
-    temp_folder_path: str | None,
-    db: Session,
-) -> tuple[list[dict], dict]:
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-    staging_dir = staging_base_path(temp_folder_path) / f"automation_{automation_id}_{timestamp}"
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    staged_files: list[dict] = []
-    skipped_files: list[dict] = []
-    used_names: set[str] = set()
-
-    for source in source_files:
-        target = unique_staging_path(staging_dir, source, used_names)
-        try:
-            shutil.copy2(source, target)
-            size_bytes = target.stat().st_size
-        except Exception as exc:
-            skipped = {"path": str(source), "target_path": str(target), "error": str(exc)}
-            skipped_files.append(skipped)
-            create_log(
-                db,
-                "warning",
-                "Automation file could not be copied to temp; skipping.",
-                "automation",
-                automation_id,
-                automation_id=automation_id,
-                metadata=skipped,
-            )
-            continue
-        staged_files.append(
-            {
-                "source_path": source,
-                "staged_path": target,
-                "file_name": target.name,
-                "extension": target.suffix.lower(),
-                "size_bytes": size_bytes,
-            }
-        )
-
-    return staged_files, {
-        "staging_dir": str(staging_dir),
-        "staged_files_count": len(staged_files),
-        "copy_failed_count": len(skipped_files),
-        "copy_failed_files": skipped_files[:20],
-    }
-
-
-def no_files_copied_message(copy_stats: dict, scan_stats: dict) -> str:
-    return (
-        "No files were copied to temp for upload. "
-        f"Matched source files: {scan_stats.get('matched_source_files', 0)}; "
-        f"copy failures: {copy_stats.get('copy_failed_count', 0)}; "
-        f"staging dir: {copy_stats.get('staging_dir')}."
-    )
 
 
 def automation_payload(data: dict) -> dict:
