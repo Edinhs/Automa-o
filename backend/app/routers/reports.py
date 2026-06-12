@@ -27,6 +27,7 @@ from app.routers.executions import (
     files_for_task,
     file_status_counts,
     normalize_text,
+    task_run_code,
 )
 from app.services.audit import create_log
 
@@ -93,16 +94,7 @@ def file_time_saved_label(item: WorkspaceFile) -> str:
     return "4,5 min" if (item.status or "").lower() in SUCCESS_FILE_STATUSES else "—"
 
 
-def task_run_code(task: AgentTask, payload: dict[str, Any]) -> str:
-    """Codigo da execucao (lote do Iniciar). Agrupa upload + monitor de follow-up da mesma
-    execucao. Dados novos usam run_id no payload; dados legados caem para o upload de origem."""
-    run_id = payload.get("run_id")
-    if run_id:
-        return str(run_id)
-    source_upload = safe_int(payload.get("source_upload_task_id"))
-    if source_upload:
-        return f"EXEC-{source_upload}"
-    return f"EXEC-{task.id}"
+# task_run_code: importado de app.routers.executions (fonte unica do codigo de execucao).
 
 
 def normalize_key(value: str | None) -> str:

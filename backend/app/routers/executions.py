@@ -107,6 +107,24 @@ def task_workspace_id(task: AgentTask, payload: dict[str, Any] | None = None) ->
         return None
 
 
+def task_run_code(task: AgentTask, payload: dict[str, Any] | None = None) -> str:
+    """Codigo da execucao (lote do clique em "Iniciar"). Agrupa as tarefas de uma mesma
+    execucao (upload + monitor de follow-up). Dados novos trazem run_id no payload; dados
+    legados caem para o upload de origem (source_upload_task_id)."""
+    payload = payload or task_payload(task)
+    run_id = payload.get("run_id")
+    if run_id:
+        return str(run_id)
+    source_upload = payload.get("source_upload_task_id")
+    try:
+        source_upload = int(source_upload) if source_upload is not None else None
+    except (TypeError, ValueError):
+        source_upload = None
+    if source_upload:
+        return f"EXEC-{source_upload}"
+    return f"EXEC-{task.id}"
+
+
 def task_user_id(task: AgentTask, payload: dict[str, Any] | None = None) -> int | None:
     payload = payload or task_payload(task)
     value = task.created_by_id or payload.get("user_id") or payload.get("requested_by")
@@ -385,12 +403,44 @@ def list_executions(
         query = query.filter(AgentTask.started_at <= end)
 
     safe_limit = min(max(int(limit or 100), 1), 1000)
-    rows: list[dict[str, Any]] = []
+
+    # Uma execucao = um clique em "Iniciar". Agrupa as tarefas da mesma execucao pelo run_code
+    # (ex.: a task de upload e o monitor de follow-up) e devolve UMA linha por execucao. A linha
+    # primaria e a de upload (inicio da execucao), com inicio/fim/duracao/status do conjunto.
+    groups: dict[str, list[AgentTask]] = {}
+    order: list[str] = []
     for task in query.order_by(AgentTask.started_at.desc(), AgentTask.id.desc()).all():
         payload = task_payload(task)
         if automation_id is not None and task_automation_id(task, payload) != automation_id:
             continue
-        rows.append(execution_out(db, task))
+        code = task_run_code(task, payload)
+        if code not in groups:
+            groups[code] = []
+            order.append(code)
+        groups[code].append(task)
+
+    rows: list[dict[str, Any]] = []
+    for code in order:
+        members = groups[code]
+        uploads = [t for t in members if t.task_type == "upload_files_to_workspace"]
+        primary = min(uploads, key=lambda t: t.id) if uploads else max(members, key=lambda t: (t.started_at or datetime.min, t.id))
+        last_member = max(members, key=lambda t: (t.started_at or datetime.min, t.id))
+        starts = [t.started_at for t in members if t.started_at]
+        finishes = [finished_at(t) for t in members if finished_at(t)]
+        run_started = min(starts) if starts else primary.started_at
+        run_finished = max(finishes) if finishes and len(finishes) == len(members) else None
+
+        execution = execution_out(db, primary)
+        execution["run_code"] = code
+        execution["task_count"] = len(members)
+        execution["started_at"] = sao_paulo_utc_iso(run_started)
+        execution["finished_at"] = sao_paulo_utc_iso(run_finished)
+        if run_started and run_finished:
+            execution["duration_seconds"] = max(int((run_finished - run_started).total_seconds()), 0)
+        execution["status"] = task_status_label(last_member)
+        execution["raw_status"] = last_member.status
+        execution["summary"]["raw_status"] = last_member.status
+        rows.append(execution)
         if len(rows) >= safe_limit:
             break
     return rows
