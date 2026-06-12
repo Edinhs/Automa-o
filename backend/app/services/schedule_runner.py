@@ -15,6 +15,7 @@ from app.core.config import SUPPORTED_ENVIRONMENTS, environment_scope, settings
 from app.core.timezone import now_sao_paulo_naive, parse_sao_paulo_datetime, to_sao_paulo_naive
 from app.db.session import SessionLocal, session_for_environment
 from app.models.automation import Automation
+from app.models.report_delivery import ReportDelivery
 from app.models.schedule import Schedule
 from app.routers.automations import create_upload_task_for_automation
 from app.services.audit import create_log
@@ -358,6 +359,152 @@ def run_due_schedules_for_all_environments(now: datetime | None = None) -> int:
     return triggered
 
 
+# ===================== Envio agendado de relatorios ao Teams =====================
+# Reusa compute_next_run / normalize_status (ReportDelivery tem os mesmos campos de
+# agendamento do Schedule), entao toda a logica de frequencia e compartilhada.
+
+
+def report_delivery_filters(delivery: ReportDelivery) -> dict:
+    """Filtros (formato esperado por reports.build_sections) para o periodo da entrega."""
+    end = datetime.utcnow()
+    start = None
+    if delivery.period_days:
+        try:
+            start = end - timedelta(days=int(delivery.period_days))
+        except (TypeError, ValueError):
+            start = None
+    return {
+        "start": start,
+        "end": end,
+        "automation_id": delivery.automation_id,
+        "workspace_id": delivery.workspace_id,
+        "status": None,
+        "source_task_id": None,
+    }
+
+
+def due_report_deliveries(db: Session, now: datetime | None = None) -> Iterable[ReportDelivery]:
+    now = to_sao_paulo_naive(now) or now_sao_paulo_naive()
+    return (
+        db.query(ReportDelivery)
+        .filter(
+            ReportDelivery.is_deleted == False,
+            or_(ReportDelivery.status.is_(None), ReportDelivery.status.in_(ACTIVE_STATUS_VALUES)),
+            ReportDelivery.next_run_at.isnot(None),
+            ReportDelivery.next_run_at <= now,
+        )
+        .order_by(ReportDelivery.next_run_at.asc(), ReportDelivery.id.asc())
+        .all()
+    )
+
+
+def hydrate_missing_report_delivery_next_runs(db: Session, now: datetime | None = None) -> None:
+    now = to_sao_paulo_naive(now) or now_sao_paulo_naive()
+    changed = False
+    deliveries = (
+        db.query(ReportDelivery)
+        .filter(ReportDelivery.is_deleted == False, or_(ReportDelivery.status.is_(None), ReportDelivery.status.in_(ACTIVE_STATUS_VALUES)))
+        .all()
+    )
+    for delivery in deliveries:
+        status = normalize_status(delivery.status)
+        if delivery.status != status:
+            delivery.status = status
+            changed = True
+        if status != ACTIVE_STATUS:
+            continue
+        next_run = compute_next_run(delivery, now)
+        if delivery.next_run_at != next_run and not (delivery.next_run_at and delivery.next_run_at <= now):
+            delivery.next_run_at = next_run
+            delivery.last_error = None
+            changed = True
+    if changed:
+        db.commit()
+
+
+def run_due_report_delivery(db: Session, delivery: ReportDelivery, now: datetime | None = None) -> None:
+    now = to_sao_paulo_naive(now) or now_sao_paulo_naive()
+    is_once = str(delivery.frequency_type or "").lower() == "once"
+    try:
+        from app.services.integrations.report_teams import send_report_to_teams  # import tardio
+
+        sent = send_report_to_teams(
+            db,
+            report_type=delivery.report_type or "Relatório Geral",
+            filters=report_delivery_filters(delivery),
+            message=delivery.message or "",
+            target=delivery.target,
+            created_by_id=delivery.created_by_id,
+        )
+        delivery.last_run_at = now
+        delivery.last_delivery_id = sent.id
+        delivery.last_error = None
+        if is_once:
+            delivery.status = COMPLETED_STATUS
+            delivery.next_run_at = None
+        else:
+            delivery.next_run_at = compute_next_run(delivery, now + timedelta(seconds=1))
+            if delivery.next_run_at is None:
+                delivery.status = EXPIRED_STATUS
+        delivery.updated_at = datetime.utcnow()
+        db.commit()
+        create_log(
+            db,
+            "info",
+            f"Report delivery to Teams triggered: {delivery.name or delivery.report_type}",
+            "report_delivery",
+            delivery.id,
+            metadata={"delivery_id": sent.id, "status": sent.status},
+        )
+    except Exception as exc:
+        delivery.last_run_at = now
+        delivery.last_error = str(exc) or exc.__class__.__name__
+        if is_once:
+            delivery.status = ERROR_STATUS
+            delivery.next_run_at = None
+        else:
+            # Recorrente: mantem ativo e tenta de novo no proximo ciclo (ex.: Teams ainda nao configurado).
+            delivery.next_run_at = compute_next_run(delivery, now + timedelta(seconds=1))
+            if delivery.next_run_at is None:
+                delivery.status = EXPIRED_STATUS
+        delivery.updated_at = datetime.utcnow()
+        db.commit()
+        create_log(
+            db,
+            "error",
+            f"Report delivery to Teams failed: {delivery.last_error}",
+            "report_delivery",
+            delivery.id,
+        )
+
+
+def run_due_report_deliveries_once(now: datetime | None = None, db: Session | None = None) -> int:
+    own_session = db is None
+    db = db or SessionLocal()
+    triggered = 0
+    try:
+        hydrate_missing_report_delivery_next_runs(db, now)
+        for delivery in due_report_deliveries(db, now):
+            run_due_report_delivery(db, delivery, now)
+            triggered += 1
+        return triggered
+    finally:
+        if own_session:
+            db.close()
+
+
+def run_due_report_deliveries_for_all_environments(now: datetime | None = None) -> int:
+    triggered = 0
+    for environment in SUPPORTED_ENVIRONMENTS:
+        with environment_scope(environment):
+            db = session_for_environment(environment)
+            try:
+                triggered += run_due_report_deliveries_once(now, db)
+            finally:
+                db.close()
+    return triggered
+
+
 async def _runner_loop() -> None:
     interval = max(int(settings.SCHEDULE_POLL_INTERVAL_SECONDS or 5), 1)
     while True:
@@ -367,6 +514,12 @@ async def _runner_loop() -> None:
             raise
         except Exception as exc:
             print(f"[schedule_runner] {exc}", flush=True)
+        try:
+            await asyncio.to_thread(run_due_report_deliveries_for_all_environments)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[schedule_runner:report_delivery] {exc}", flush=True)
         await asyncio.sleep(interval)
 
 

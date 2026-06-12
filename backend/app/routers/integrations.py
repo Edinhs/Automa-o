@@ -6,8 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.timezone import now_sao_paulo_naive, sao_paulo_local_iso, sao_paulo_utc_iso, to_sao_paulo_naive
 from app.db.session import get_db
 from app.models.integration import IntegrationConnection, IntegrationDelivery
+from app.models.report_delivery import ReportDelivery
+from app.routers.reports import filters_from_payload, parse_report_type
 from app.services.audit import create_log
 from app.services.integrations.graph_client import (
     GraphClient,
@@ -17,6 +20,16 @@ from app.services.integrations.graph_client import (
     missing_base_graph_settings,
     sanitize_for_storage,
     send_teams_webhook,
+)
+from app.services.integrations.report_teams import send_report_to_teams
+from app.services.schedule_runner import (
+    ACTIVE_STATUS,
+    PAUSED_STATUS,
+    compute_next_run,
+    display_status,
+    normalize_status,
+    parse_local_datetime,
+    run_due_report_delivery,
 )
 
 router = APIRouter()
@@ -339,3 +352,245 @@ def _ensure_teams_graph_message_configured() -> None:
         missing.append("MS_GRAPH_TEAMS_CHANNEL_ID")
     if missing:
         raise GraphConfigurationError(missing)
+
+
+# ===================== Agendamento de envio de relatorio ao Teams =====================
+
+REPORT_DELIVERY_FREQUENCIES = {"daily", "weekly", "monthly", "once", "interval"}
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    if value in [None, "", "Todos"]:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _report_delivery_payload(data: dict) -> dict:
+    data = data or {}
+    clean: dict[str, Any] = {}
+    if data.get("report_type") is not None:
+        clean["report_type"] = parse_report_type(data.get("report_type"))  # valida e normaliza o nome
+    if data.get("file_format") is not None:
+        clean["file_format"] = str(data.get("file_format") or "xlsx").strip().lower() or "xlsx"
+    if "message" in data:
+        clean["message"] = str(data.get("message") or "")
+    if "name" in data:
+        clean["name"] = str(data.get("name") or "").strip() or None
+    if "target" in data or "channel" in data:
+        clean["target"] = str(data.get("target") or data.get("channel") or "").strip() or None
+    if "period_days" in data:
+        clean["period_days"] = _safe_int_or_none(data.get("period_days"))
+    if "automation_id" in data:
+        clean["automation_id"] = _safe_int_or_none(data.get("automation_id"))
+    if "workspace_id" in data:
+        clean["workspace_id"] = _safe_int_or_none(data.get("workspace_id"))
+
+    frequency_type = str(data.get("frequency_type") or "").strip().lower()
+    if frequency_type:
+        clean["frequency_type"] = frequency_type
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    if "time_of_day" in data:
+        clean["time_of_day"] = data.get("time_of_day")
+    elif payload.get("hour"):
+        clean["time_of_day"] = payload.get("hour")
+    if "days_of_week" in data:
+        days = data.get("days_of_week")
+        clean["days_of_week"] = days if isinstance(days, str) else json.dumps(days, ensure_ascii=False)
+    elif "week_days" in payload:
+        clean["days_of_week"] = json.dumps(payload.get("week_days"), ensure_ascii=False)
+    if "day_of_month" in data:
+        clean["day_of_month"] = _safe_int_or_none(data.get("day_of_month"))
+    elif "month_day" in payload:
+        clean["day_of_month"] = _safe_int_or_none(payload.get("month_day"))
+    if "interval_minutes" in data:
+        interval = _safe_int_or_none(data.get("interval_minutes"))
+        clean["interval_minutes"] = max(interval, 1) if interval is not None else None
+
+    start = data.get("start_date") if "start_date" in data else data.get("starts_at")
+    end = data.get("end_date") if "end_date" in data else data.get("expires_at")
+    if start is not None:
+        clean["start_date"] = parse_local_datetime(start)
+    if end is not None:
+        clean["end_date"] = parse_local_datetime(end)
+    if data.get("run_date") is not None:
+        clean["run_date"] = parse_local_datetime(data.get("run_date"))
+    if clean.get("frequency_type") == "once" and clean.get("start_date") and not clean.get("run_date"):
+        clean["run_date"] = clean["start_date"]
+    if "status" in data:
+        clean["status"] = normalize_status(data.get("status"))
+    return clean
+
+
+def _validate_report_delivery(delivery: ReportDelivery, now: datetime | None = None) -> None:
+    now = to_sao_paulo_naive(now) or now_sao_paulo_naive()
+    if delivery.frequency_type not in REPORT_DELIVERY_FREQUENCIES:
+        raise HTTPException(422, "Invalid frequency_type")
+    if not delivery.report_type:
+        raise HTTPException(422, "report_type is required")
+    if delivery.frequency_type == "once":
+        delivery.run_date = delivery.run_date or delivery.start_date
+        delivery.start_date = delivery.start_date or delivery.run_date
+        if not delivery.run_date:
+            raise HTTPException(422, "Data e Hora is required")
+        if delivery.run_date <= now:
+            raise HTTPException(422, "Data e Hora must be in the future")
+    if delivery.frequency_type == "interval" and not delivery.interval_minutes:
+        delivery.interval_minutes = 60
+
+
+def _refresh_report_delivery(delivery: ReportDelivery) -> None:
+    delivery.name = delivery.name or f"Teams: {delivery.report_type}"
+    delivery.next_run_at = compute_next_run(delivery)
+    if (
+        normalize_status(delivery.status) == ACTIVE_STATUS
+        and delivery.next_run_at is None
+        and delivery.end_date
+        and delivery.end_date < now_sao_paulo_naive()
+    ):
+        delivery.status = "expired"
+
+
+def _report_delivery_out(delivery: ReportDelivery) -> dict[str, Any]:
+    return {
+        "id": delivery.id,
+        "name": delivery.name,
+        "provider": delivery.provider or "Teams",
+        "report_type": delivery.report_type,
+        "file_format": delivery.file_format,
+        "message": delivery.message,
+        "target": delivery.target,
+        "automation_id": delivery.automation_id,
+        "workspace_id": delivery.workspace_id,
+        "period_days": delivery.period_days,
+        "frequency_type": delivery.frequency_type,
+        "time_of_day": delivery.time_of_day,
+        "hour": delivery.time_of_day,
+        "days_of_week": delivery.days_of_week,
+        "day_of_month": delivery.day_of_month,
+        "month_day": delivery.day_of_month,
+        "run_date": sao_paulo_local_iso(delivery.run_date),
+        "start_date": sao_paulo_local_iso(delivery.start_date),
+        "starts_at": sao_paulo_local_iso(delivery.start_date),
+        "end_date": sao_paulo_local_iso(delivery.end_date),
+        "expires_at": sao_paulo_local_iso(delivery.end_date),
+        "interval_minutes": delivery.interval_minutes,
+        "next_run_at": sao_paulo_local_iso(delivery.next_run_at),
+        "last_run_at": sao_paulo_local_iso(delivery.last_run_at),
+        "last_delivery_id": delivery.last_delivery_id,
+        "last_error": delivery.last_error,
+        "status": display_status(delivery),
+        "raw_status": delivery.status,
+        "created_at": sao_paulo_utc_iso(delivery.created_at),
+        "updated_at": sao_paulo_utc_iso(delivery.updated_at),
+    }
+
+
+@router.get("/teams/report-deliveries")
+def list_report_deliveries(limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+    deliveries = (
+        db.query(ReportDelivery)
+        .filter(ReportDelivery.is_deleted == False)
+        .order_by(ReportDelivery.next_run_at.is_(None), ReportDelivery.next_run_at.asc(), ReportDelivery.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_report_delivery_out(delivery) for delivery in deliveries]
+
+
+@router.post("/teams/report-deliveries")
+def create_report_delivery(data: dict, db: Session = Depends(get_db)):
+    clean = _report_delivery_payload(data)
+    clean["status"] = clean.get("status") or ACTIVE_STATUS
+    clean.setdefault("report_type", parse_report_type(None))
+    delivery = ReportDelivery(provider="Teams", created_by_id=_safe_int_or_none(data.get("generated_by_id")), **clean)
+    _validate_report_delivery(delivery)
+    _refresh_report_delivery(delivery)
+    db.add(delivery)
+    db.commit()
+    db.refresh(delivery)
+    create_log(db, "info", f"Report delivery created: {delivery.name}", "report_delivery", delivery.id)
+    return _report_delivery_out(delivery)
+
+
+@router.put("/teams/report-deliveries/{id}")
+def update_report_delivery(id: int, data: dict, db: Session = Depends(get_db)):
+    delivery = db.query(ReportDelivery).filter(ReportDelivery.id == id, ReportDelivery.is_deleted == False).first()
+    if not delivery:
+        raise HTTPException(404)
+    for key, value in _report_delivery_payload(data).items():
+        setattr(delivery, key, value)
+    delivery.last_error = None
+    if delivery.status not in {PAUSED_STATUS, "completed"}:
+        delivery.status = normalize_status(delivery.status)
+    _validate_report_delivery(delivery)
+    _refresh_report_delivery(delivery)
+    db.commit()
+    db.refresh(delivery)
+    create_log(db, "info", f"Report delivery updated: {delivery.name}", "report_delivery", delivery.id)
+    return _report_delivery_out(delivery)
+
+
+@router.delete("/teams/report-deliveries/{id}")
+def delete_report_delivery(id: int, db: Session = Depends(get_db)):
+    delivery = db.query(ReportDelivery).filter(ReportDelivery.id == id, ReportDelivery.is_deleted == False).first()
+    if not delivery:
+        raise HTTPException(404)
+    delivery.is_deleted = True
+    delivery.deleted_at = datetime.utcnow()
+    db.commit()
+    create_log(db, "warning", "Report delivery deleted", "report_delivery", delivery.id)
+    return {"status": "deleted"}
+
+
+@router.post("/teams/report-deliveries/{id}/actions/{action}")
+def report_delivery_action(id: int, action: str, db: Session = Depends(get_db)):
+    delivery = db.query(ReportDelivery).filter(ReportDelivery.id == id, ReportDelivery.is_deleted == False).first()
+    if not delivery:
+        raise HTTPException(404)
+    if action == "pause":
+        delivery.status = PAUSED_STATUS
+        delivery.next_run_at = None
+        db.commit()
+        db.refresh(delivery)
+        create_log(db, "info", "Report delivery paused", "report_delivery", delivery.id)
+        return _report_delivery_out(delivery)
+    if action == "resume":
+        delivery.status = ACTIVE_STATUS
+        delivery.last_error = None
+        _validate_report_delivery(delivery)
+        _refresh_report_delivery(delivery)
+        db.commit()
+        db.refresh(delivery)
+        create_log(db, "info", "Report delivery resumed", "report_delivery", delivery.id)
+        return _report_delivery_out(delivery)
+    if action == "delete":
+        return delete_report_delivery(id, db)
+    if action in {"run-now", "run_now"}:
+        run_due_report_delivery(db, delivery)
+        db.refresh(delivery)
+        return _report_delivery_out(delivery)
+    raise HTTPException(400, "Invalid action")
+
+
+@router.post("/teams/report-deliveries/send-now")
+def send_report_delivery_now(data: dict, db: Session = Depends(get_db)):
+    """Envia o resumo do relatorio ao Teams imediatamente, sem persistir agendamento."""
+    report_type = parse_report_type(data.get("report_type"))
+    filters = filters_from_payload(data)
+    message = str(data.get("message") or "")
+    target = str(data.get("target") or data.get("channel") or "").strip() or None
+    try:
+        delivery = send_report_to_teams(
+            db,
+            report_type=report_type,
+            filters=filters,
+            message=message,
+            target=target,
+            created_by_id=_safe_int_or_none(data.get("generated_by_id")),
+        )
+    except GraphIntegrationError as exc:
+        raise _http_error(exc) from exc
+    return {"status": delivery.status, "channel": "teams", "delivery": _delivery_response(delivery)}

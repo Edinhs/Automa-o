@@ -7,4 +7,5 @@ from app.models.execution import ExecutionLog, ExecutionReport
 from app.models.schedule import Schedule
 from app.models.agent import AgentTask, LocalAgent
 from app.models.integration import IntegrationConnection, IntegrationDelivery
+from app.models.report_delivery import ReportDelivery
 from app.models.playground_user import WorkspaceExternalUser
