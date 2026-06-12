@@ -69,6 +69,12 @@ MEDIA_TYPES = {
     "csv": "text/csv; charset=utf-8",
 }
 
+# Tempo economizado por arquivo enviado com sucesso (mesmo valor estabelecido no card
+# "Tempo economizado" da Home do dashboard: successfulFiles * 4.5 min).
+TIME_SAVED_MINUTES_PER_FILE = 4.5
+# Status que representam arquivo efetivamente enviado ao workspace com sucesso.
+SUCCESS_FILE_STATUSES = ("ready", "uploaded")
+
 
 @dataclass
 class ReportSection:
@@ -465,7 +471,33 @@ def build_sections(db: Session, report_type: str, filters: dict[str, Any]) -> li
     return [BLOCK_BUILDERS[key](db, filters, names) for key in sections_for_type(report_type)]
 
 
-def summary_section(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> ReportSection:
+def successful_files_count(db: Session, filters: dict[str, Any]) -> int:
+    """Conta os arquivos enviados com sucesso ao workspace (ready/uploaded), respeitando os
+    filtros de automacao/workspace/periodo do relatorio. Base do "tempo economizado"."""
+    query = db.query(WorkspaceFile).filter(
+        WorkspaceFile.is_deleted == False,
+        WorkspaceFile.status.in_(SUCCESS_FILE_STATUSES),
+    )
+    if filters["automation_id"]:
+        query = query.filter(WorkspaceFile.automation_id == filters["automation_id"])
+    if filters["workspace_id"]:
+        query = query.filter(WorkspaceFile.workspace_id == filters["workspace_id"])
+    count = 0
+    for item in query.all():
+        reference = item.uploaded_at or item.ready_at or item.updated_at
+        if within_period(reference, filters["start"], filters["end"]):
+            count += 1
+    return count
+
+
+def format_time_saved(total_minutes: int) -> str:
+    """Formata minutos como "Xh YYmin" (mesmo formato do card da Home)."""
+    hrs, mins = divmod(max(int(total_minutes), 0), 60)
+    return f"{hrs}h {mins:02d}min"
+
+
+def summary_section(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], successful_count: int = 0) -> ReportSection:
+    total_min = round(successful_count * TIME_SAVED_MINUTES_PER_FILE)
     rows = [
         ["Tipo", report_type],
         ["Formato", file_format.upper()],
@@ -477,6 +509,9 @@ def summary_section(report_type: str, file_format: str, filters: dict[str, Any],
         ["Classificacao", filters["status"] or "Todos"],
         ["Ciclo", filters["source_task_id"] or "Todos"],
         ["Gerado em", format_dt(datetime.utcnow())],
+        ["Arquivos enviados (sucesso)", successful_count],
+        ["Tempo economizado por arquivo", "4,5 min"],
+        ["Tempo economizado total", format_time_saved(total_min)],
     ]
     rows.extend([[section.title, len(section.rows)] for section in sections])
     return ReportSection("summary", "Resumo", ["Campo", "Valor"], rows)
@@ -502,13 +537,13 @@ def safe_sheet_name(value: str, used: set[str]) -> str:
     return name
 
 
-def build_excel(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> bytes:
+def build_excel(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], successful_count: int = 0) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
     wb = Workbook()
     used_names: set[str] = set()
-    all_sections = [summary_section(report_type, file_format, filters, sections), *sections]
+    all_sections = [summary_section(report_type, file_format, filters, sections, successful_count), *sections]
     header_fill = PatternFill("solid", fgColor="1E3A5F")
     header_font = Font(bold=True, color="FFFFFF")
     for index, section in enumerate(all_sections):
@@ -556,7 +591,7 @@ def pdf_table(section: ReportSection, styles):
     return table
 
 
-def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> bytes:
+def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], successful_count: int = 0) -> bytes:
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import cm
@@ -571,7 +606,7 @@ def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], secti
         Paragraph("<b>Stellantis Automation HUB</b>", styles["Title"]),
         Paragraph(f"Relatorio: {escape(report_type)}", styles["Heading2"]),
         Spacer(1, 0.3 * cm),
-        pdf_table(summary_section(report_type, file_format, filters, sections), styles),
+        pdf_table(summary_section(report_type, file_format, filters, sections, successful_count), styles),
         Spacer(1, 0.5 * cm),
     ]
     for index, section in enumerate(sections):
@@ -587,11 +622,11 @@ def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], secti
     return buf.getvalue()
 
 
-def build_csv(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> str:
+def build_csv(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], successful_count: int = 0) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
     if normalize_key(report_type) == "relatorio geral":
-        for section in [summary_section(report_type, file_format, filters, sections), *sections]:
+        for section in [summary_section(report_type, file_format, filters, sections, successful_count), *sections]:
             writer.writerow([section.title])
             writer.writerow(section.headers)
             writer.writerows(section.rows)
@@ -605,11 +640,12 @@ def build_csv(report_type: str, file_format: str, filters: dict[str, Any], secti
 
 def build_report_content(report_type: str, file_format: str, filters: dict[str, Any], db: Session) -> bytes:
     sections = build_sections(db, report_type, filters)
+    successful_count = successful_files_count(db, filters)
     if file_format == "xlsx":
-        return build_excel(report_type, file_format, filters, sections)
+        return build_excel(report_type, file_format, filters, sections, successful_count)
     if file_format == "pdf":
-        return build_pdf(report_type, file_format, filters, sections)
-    return build_csv(report_type, file_format, filters, sections).encode("utf-8-sig")
+        return build_pdf(report_type, file_format, filters, sections, successful_count)
+    return build_csv(report_type, file_format, filters, sections, successful_count).encode("utf-8-sig")
 
 
 def write_report_file(report_type: str, file_format: str, filters: dict[str, Any], db: Session) -> Path:
