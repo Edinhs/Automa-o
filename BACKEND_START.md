@@ -86,8 +86,11 @@ As tabelas centrais atuais sao:
 - `schedules`
 - `integration_connections`
 - `integration_deliveries`
+- `report_deliveries`
 
 Historico de execucoes e derivado de `agent_tasks.started_at`, com apoio de `workspace_files` e `execution_logs`. Nao existe uma tabela separada `automation_executions` nesta versao.
+
+`report_deliveries` guarda os agendamentos de envio de relatorio (resumo) ao Teams. Os campos de agendamento (`frequency_type`, `time_of_day`, `days_of_week`, `day_of_month`, `run_date`, `start_date`, `end_date`, `interval_minutes`, `next_run_at`) reutilizam a mesma logica de frequencia de `schedules` (`schedule_runner.compute_next_run`). O scheduler embarcado processa as entregas devidas a cada ciclo e registra cada envio em `integration_deliveries` (`delivery_type="report"`).
 
 ## Relatorios de monitoramento de pasta
 
@@ -122,6 +125,7 @@ Autenticados por Bearer JWT:
 - `/api/reports`
 - `/api/schedules`
 - `/api/integrations`
+- `/api/integrations/teams/report-deliveries` (CRUD; `POST .../{id}/actions/{pause|resume|delete|run-now}`; `POST .../send-now` para envio imediato do resumo ao Teams)
 - `/api/executions`
 
 Autenticados por Bearer JWT ou `X-Agent-Token` interno:
