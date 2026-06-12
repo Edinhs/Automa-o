@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Iterable
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -520,6 +521,11 @@ def create_upload_task_for_automation(
         # "Executar apenas monitoramento de pasta": quando ligado, o agente apenas le a
         # pasta e copia os arquivos para a pasta temp, sem abrir a automacao web.
         "monitor_only": bool(config.get("monitor_only")),
+        # Identificador da execucao (lote do clique em "Iniciar"). Uma execucao agrupa o
+        # conjunto de tarefas geradas por um Iniciar ate o fim (upload + monitor de follow-up,
+        # que herda este payload). Um start em lote pode compartilhar o mesmo run_id via
+        # payload_overrides para contar como UMA execucao no relatorio.
+        "run_id": f"RUN-{uuid4().hex[:12]}",
     }
     payload.update(payload_overrides)
     payload["user_id"] = session_user_id

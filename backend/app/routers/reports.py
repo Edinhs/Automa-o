@@ -82,6 +82,27 @@ class ReportSection:
     title: str
     headers: list[str]
     rows: list[list[Any]]
+    # Quando definido, o Resumo usa este valor (em vez de len(rows)) para a contagem da secao.
+    # Usado pelas Execucoes: o Resumo conta execucoes distintas (um clique em "Iniciar"),
+    # enquanto a secao detalhada mantem uma linha por tarefa.
+    summary_count: int | None = None
+
+
+def file_time_saved_label(item: WorkspaceFile) -> str:
+    """Tempo economizado por arquivo (4,5 min) quando o arquivo foi efetivamente enviado."""
+    return "4,5 min" if (item.status or "").lower() in SUCCESS_FILE_STATUSES else "—"
+
+
+def task_run_code(task: AgentTask, payload: dict[str, Any]) -> str:
+    """Codigo da execucao (lote do Iniciar). Agrupa upload + monitor de follow-up da mesma
+    execucao. Dados novos usam run_id no payload; dados legados caem para o upload de origem."""
+    run_id = payload.get("run_id")
+    if run_id:
+        return str(run_id)
+    source_upload = safe_int(payload.get("source_upload_task_id"))
+    if source_upload:
+        return f"EXEC-{source_upload}"
+    return f"EXEC-{task.id}"
 
 
 def normalize_key(value: str | None) -> str:
@@ -250,11 +271,12 @@ def block_files(db: Session, filters: dict[str, Any], names: tuple[dict[int, str
             item.original_path or "",
             format_dt(event_date),
             item.detection_task_id,
+            file_time_saved_label(item),
         ])
     return ReportSection(
         "files",
         REPORT_BLOCKS["files"],
-        ["ID", "Nome", "Automacao", "Workspace", "Classificacao", "Extensao", "Tamanho", "Caminho original", "Detectado em", "Ciclo"],
+        ["ID", "Nome", "Automacao", "Workspace", "Classificacao", "Extensao", "Tamanho", "Caminho original", "Detectado em", "Ciclo", "Tempo economizado"],
         rows,
     )
 
@@ -325,7 +347,7 @@ def block_updated_files(db: Session, filters: dict[str, Any], names: tuple[dict[
         WorkspaceFile.is_deleted == False,
         WorkspaceFile.detection_source == DETECTION_SOURCE,
         WorkspaceFile.detection_task_id.isnot(None),
-        WorkspaceFile.detection_classification == "updated",
+        WorkspaceFile.detection_classification.in_(["new", "updated"]),
     )
     if filters["source_task_id"]:
         query = query.filter(WorkspaceFile.detection_task_id == filters["source_task_id"])
@@ -351,8 +373,9 @@ def block_updated_files(db: Session, filters: dict[str, Any], names: tuple[dict[
             item.original_path or "",
             format_dt(event_date),
             item.detection_task_id,
+            file_time_saved_label(item),
         ])
-    return ReportSection("updated_files", REPORT_BLOCKS["updated_files"], ["ID", "Nome", "Automação", "Workspace", "Classificação", "Extensão", "Tamanho", "Caminho original", "Detectado em", "Ciclo"], rows)
+    return ReportSection("updated_files", REPORT_BLOCKS["updated_files"], ["ID", "Nome", "Automação", "Workspace", "Classificação", "Extensão", "Tamanho", "Caminho original", "Detectado em", "Ciclo", "Tempo economizado"], rows)
 
 
 def block_workspaces(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
@@ -412,30 +435,34 @@ def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int
     if filters["source_task_id"]:
         query = query.filter(AgentTask.id == filters["source_task_id"])
     rows = []
+    run_codes: set[str] = set()
     for task in query.order_by(AgentTask.started_at.desc(), AgentTask.id.desc()).all():
         payload = parse_json(task.payload_json)
         automation_id = payload.get("automation_id")
         workspace_id = payload.get("workspace_id")
-        
+
         if filters["automation_id"] and automation_id != filters["automation_id"]:
             continue
         if filters["workspace_id"] and workspace_id != filters["workspace_id"]:
             continue
         if not within_period(task.started_at, filters["start"], filters["end"]):
             continue
-        
+
         files = files_for_task(db, task, payload)
         counts = file_status_counts(files)
-        
+
         status_label = STATUS_LABELS.get(task.status or "", task.status or "Pendente")
         if filters["status"] and task.status != STATUS_FILTERS.get(normalize_text(filters["status"]), filters["status"]):
             continue
-            
+
         end = task.completed_at or task.failed_at or datetime.utcnow()
         duration = max(int((end - task.started_at).total_seconds()), 0) if task.started_at else 0
-        
+        run_code = task_run_code(task, payload)
+        run_codes.add(run_code)
+
         rows.append([
             task.id,
+            run_code,
             task.task_type or "",
             automation_names.get(automation_id, automation_id or ""),
             workspace_names.get(workspace_id, workspace_id or payload.get("workspace_name") or ""),
@@ -447,11 +474,14 @@ def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int
             counts["errors"],
             status_label,
         ])
+    # Resumo conta execucoes distintas (um Iniciar = uma execucao, agrupando upload + monitor);
+    # a secao detalhada mantem uma linha por tarefa (metrica individual).
     return ReportSection(
         "executions",
         REPORT_BLOCKS["executions"],
-        ["ID", "Tipo de Tarefa", "Automação", "Workspace", "Início", "Fim", "Duração (s)", "Total de Arquivos", "Sucessos", "Erros", "Status"],
+        ["ID", "Execução", "Tipo de Tarefa", "Automação", "Workspace", "Início", "Fim", "Duração (s)", "Total de Arquivos", "Sucessos", "Erros", "Status"],
         rows,
+        summary_count=len(run_codes),
     )
 
 
@@ -513,7 +543,10 @@ def summary_section(report_type: str, file_format: str, filters: dict[str, Any],
         ["Tempo economizado por arquivo", "4,5 min"],
         ["Tempo economizado total", format_time_saved(total_min)],
     ]
-    rows.extend([[section.title, len(section.rows)] for section in sections])
+    rows.extend([
+        [section.title, section.summary_count if section.summary_count is not None else len(section.rows)]
+        for section in sections
+    ])
     return ReportSection("summary", "Resumo", ["Campo", "Valor"], rows)
 
 
