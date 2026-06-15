@@ -1500,6 +1500,7 @@ function zW(){
         }
     }
     
+    x.useEffect(()=>{if(e.playgroundConnected)return;let alive=!0;const tick=async()=>{try{const r=await TS();if(alive&&r&&r.user&&r.user.playground_connected)l?.(Pi(r.user));}catch(_e){}};tick();const id=setInterval(tick,4000);return()=>{alive=!1;clearInterval(id);};},[e.playgroundConnected]);
     return h.jsxs(nl,{
         title:"Meu perfil",
         subtitle:"Dados do usuário logado, credenciais e sessão local do Playground.",
@@ -1524,14 +1525,14 @@ function zW(){
                             h.jsxs("button",{
                                 type:"button",
                                 onClick:_,
-                                className: e.playground_connected 
+                                className: e.playgroundConnected 
                                     ? "mt-3 w-full rounded-lg border border-emerald-500/30 bg-emerald-600 hover:bg-emerald-700 px-3 py-2.5 text-xs font-bold text-white transition shadow-sm"
                                     : "mt-3 w-full rounded-lg border border-amber-500/30 bg-amber-500 hover:bg-amber-600 px-3 py-2.5 text-xs font-bold text-zinc-950 transition shadow-sm",
                                 children:[
-                                    e.playground_connected ? "Playground Conectado" : "Conectar Playground GenAI",
+                                    e.playgroundConnected ? "Playground Conectado" : "Conectar Playground GenAI",
                                     h.jsx("span",{
                                         className:"mt-1 block text-[10px] font-medium opacity-85",
-                                        children: e.playground_connected ? "Sessão ativa e autenticada" : "Abrir login no Edge pelo agente local"
+                                        children: e.playgroundConnected ? "Sessão ativa e autenticada" : "Abrir login no Edge pelo agente local"
                                     })
                                 ]
                             })
