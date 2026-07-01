@@ -1,0 +1,61 @@
+# Local secrets and runtime state
+.env
+*.env
+!*.env.example
+backend/.env
+backend/data/
+data/
+logs/
+*.log
+*.pid
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# JavaScript dependencies and caches
+node_modules/
+.npm/
+
+# Browser/runtime binaries and test artifacts
+backend/ms-playwright/
+ms-playwright/
+.playwright/
+playwright-report/
+test-results/
+screenshots/
+
+# Generated release packages
+releases/
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+
+# Local tool state (track only the project subagent definitions)
+.agy/
+.antigravitycli/
+.claude/*
+!.claude/agents/
+
+# Bundle backups created during hand-edits (not for the repo)
+*.bak
+*.bak-*
+
+# Runtime reports folder (root-level reports)
+relatorios/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
