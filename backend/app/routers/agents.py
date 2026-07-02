@@ -530,10 +530,18 @@ def complete_task(id: int, data: Optional[dict] = None, db: Session = Depends(ge
                         "status": f.status,
                         "playground_status": f.playground_status,
                     })
+                # origin_task_id ancora todas as tasks satelites (monitor/reenvio) na task RAIZ
+                # da inicializacao (a primeira upload_files_to_workspace criada por
+                # create_upload_task_for_automation). Se esta propria upload ja for um reenvio
+                # (carrega origin_task_id no payload), propaga a MESMA raiz -- nunca aponta para
+                # um reenvio intermediario. Usado por list_executions para agrupar 1 linha por
+                # inicializacao. source_upload_task_id e mantido por compatibilidade.
+                root_task_id = payload.get("origin_task_id") or task.id
                 monitor_payload = {
                     **payload,
                     "files": canonical_files,
                     "source_upload_task_id": task.id,
+                    "origin_task_id": root_task_id,
                 }
                 monitor_payload.pop("completed_batches", None)
                 monitor_task = AgentTask(
