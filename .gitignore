@@ -51,6 +51,7 @@ releases/
 # Bundle backups created during hand-edits (not for the repo)
 *.bak
 *.bak-*
+*.bak_*
 
 # Runtime reports folder (root-level reports)
 relatorios/
