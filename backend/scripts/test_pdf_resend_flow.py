@@ -80,9 +80,54 @@ def test_convert_keeps_original_and_pdf() -> None:
         pu.convert_file_to_pdf = original
 
 
+def test_resend_splits_into_batches() -> None:
+    # Reenvio de PDF agora vai EM LOTES: 5 arquivos com batch_size=2 -> 3 lotes (2, 2, 1),
+    # cada um em sua subpasta 'lote_NNN' e com batch_number distinto, de modo que o
+    # batches_for_upload do upload enxergue 3 lotes separados (checkpoint por lote).
+    import app.cli.local_agent as la  # noqa: E402
+
+    def fake_convert(source: str, pdf_dir: str, log) -> str:
+        Path(pdf_dir).mkdir(parents=True, exist_ok=True)
+        out = Path(pdf_dir) / f"{Path(source).stem}.pdf"
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return str(out)
+
+    orig_convert = la.convert_to_pdf_in_folder
+    orig_update = la.update_file
+    la.convert_to_pdf_in_folder = fake_convert
+    la.update_file = lambda *_a, **_k: None
+    try:
+        tmp = Path(tempfile.mkdtemp(prefix="pdf_batch_"))
+        pdf_dir = str(tmp / "PDF")
+        items = [
+            {
+                "file_id": i,
+                "file_name": f"doc{i}.docx",
+                "temp_path": str(tmp / f"doc{i}.docx"),
+                "original_path": str(tmp / f"doc{i}.docx"),
+            }
+            for i in range(1, 6)  # 5 arquivos
+        ]
+        resend_files, resent, failed = la._build_resend_batch(None, items, pdf_dir, _log, batch_size=2)
+        assert len(resend_files) == 5 and not failed, (resend_files, failed)
+        assert sorted({f["batch_number"] for f in resend_files}) == [1, 2, 3]
+        folders = {f["batch_number"]: _norm(f["batch_folder_path"]) for f in resend_files}
+        assert folders[1].endswith("PDF/lote_001"), folders[1]
+        assert folders[2].endswith("PDF/lote_002"), folders[2]
+        assert folders[3].endswith("PDF/lote_003"), folders[3]
+        # O agrupador do upload deve enxergar 3 lotes distintos (2, 2, 1).
+        groups = pu.batches_for_upload(resend_files, 2)
+        assert sorted(len(g) for g in groups) == [1, 2, 2], [len(g) for g in groups]
+        print("[PASS] _build_resend_batch divide o reenvio em lotes (lote_NNN) -> 3 lotes")
+    finally:
+        la.convert_to_pdf_in_folder = orig_convert
+        la.update_file = orig_update
+
+
 if __name__ == "__main__":
     test_resend_dir_uses_staging_run_dir()
     test_resend_dir_fallback_from_temp_path()
     test_resend_dir_last_resort_folder()
     test_convert_keeps_original_and_pdf()
+    test_resend_splits_into_batches()
     print("\nTODOS OS TESTES DO FLUXO DE REENVIO PDF PASSARAM.")

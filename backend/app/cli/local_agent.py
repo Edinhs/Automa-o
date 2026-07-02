@@ -941,56 +941,81 @@ def _build_resend_batch(
     log,
     automation_id: Optional[Any] = None,
     should_continue=None,
+    batch_size: Optional[int] = None,
 ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    """Converte cada arquivo para a pasta 'PDF' (fora do temp) e monta o lote de reenvio.
+    """Converte cada arquivo para a pasta 'PDF' (fora do temp) e monta o reenvio EM LOTES.
 
-    Deixa SOMENTE o PDF convertido na pasta PDF (convert_to_pdf_in_folder nao copia o original)
-    e agrupa tudo num unico lote (mesmo batch_folder_path). Falha de um arquivo nao derruba os
+    Assim como o upload normal, os PDFs sao divididos em lotes de 'batch_size' (default
+    UPLOAD_BATCH_SIZE), cada lote em sua subpasta 'lote_NNN' dentro da pasta PDF. Como cada item
+    recebe um 'batch_folder_path' distinto por lote, o batches_for_upload agrupa por pasta e o
+    upload envia/confirma um lote de cada vez (checkpoint por lote), em vez de um unico lote
+    gigante. Deixa SOMENTE o PDF convertido na pasta do lote; falha de um arquivo nao derruba os
     demais: ele vira manual_review e o lote segue. Retorna (resend_files, resent_names, failed).
     """
+    try:
+        size = max(1, int(batch_size or settings.UPLOAD_BATCH_SIZE))
+    except (TypeError, ValueError):
+        size = max(1, int(settings.UPLOAD_BATCH_SIZE))
+    # Base da pasta PDF: usa pdf_dir; se ausente, deriva do primeiro item com origem real
+    # (pasta monitorada, nunca o temp). As subpastas 'lote_NNN' ficam dentro dela.
+    base_pdf_dir = pdf_dir
+    if not base_pdf_dir:
+        for candidate in items:
+            src = candidate.get("original_path") or candidate.get("temp_path") or candidate.get("path")
+            if src:
+                base_pdf_dir = str(Path(str(src)).parent / "PDF")
+                break
     resend_files: list[dict[str, Any]] = []
     resent_names: list[str] = []
     conversion_failed: list[str] = []
-    for item in items:
-        if should_continue:
-            should_continue()
-        file_id = item.get("file_id") or item.get("id")
-        source = item.get("temp_path") or item.get("path") or item.get("original_path")
-        name = item.get("resend_name") or item.get("file_name") or (Path(str(source)).name if source else str(file_id))
-        if not source:
-            update_file(session, file_id, {"status": "manual_review", "last_error": "Sem caminho de origem para reenvio."})
-            conversion_failed.append(name)
-            continue
-        # Pasta PDF baseada na pasta monitorada (original_path), nunca no temp.
-        target_pdf_dir = pdf_dir or str(Path(str(item.get("original_path") or source)).parent / "PDF")
-        try:
-            pdf_path = convert_to_pdf_in_folder(str(source), target_pdf_dir, log)
-        except Exception as exc:
-            update_file(session, file_id, {"status": "manual_review", "last_error": f"Falha na conversao PDF para reenvio: {exc}"})
-            log("warning", f"Falha ao converter para PDF (reenvio): {name}: {exc}", file_id=file_id, automation_id=automation_id)
-            conversion_failed.append(name)
-            continue
-        update_file(
-            session,
-            file_id,
-            {"pdf_path": pdf_path, "converted_to_pdf": True, "status": "pending_retry", "playground_status": "Pending", "last_error": None},
-        )
-        resent_names.append(name)
-        resend_files.append(
-            {
-                "file_id": file_id,
-                "file_name": Path(pdf_path).name,
-                # Nome original (pre-conversao) para correlacao por nome no backend, ja que
-                # 'file_name' agora e o do PDF. Lookup primario continua sendo por file_id.
-                "original_file_name": item.get("file_name") or name,
-                "path": pdf_path,
-                "temp_path": pdf_path,
-                "original_path": item.get("original_path") or source,
-                "batch_number": 1,
-                "batch_folder_path": target_pdf_dir,
-                "attempts": int(item.get("attempts") or 0) + 1,
-            }
-        )
+    for batch_index, chunk in enumerate(
+        (items[i:i + size] for i in range(0, len(items), size)), start=1
+    ):
+        # Cada lote vai para 'lote_NNN' (ao lado dos lotes do upload normal); o batch_folder_path
+        # distinto e o que faz o upload tratar cada grupo como um lote separado (batches_for_upload).
+        batch_dir = str(Path(base_pdf_dir) / f"lote_{batch_index:03d}") if base_pdf_dir else None
+        for item in chunk:
+            if should_continue:
+                should_continue()
+            file_id = item.get("file_id") or item.get("id")
+            source = item.get("temp_path") or item.get("path") or item.get("original_path")
+            name = item.get("resend_name") or item.get("file_name") or (Path(str(source)).name if source else str(file_id))
+            if not source:
+                update_file(session, file_id, {"status": "manual_review", "last_error": "Sem caminho de origem para reenvio."})
+                conversion_failed.append(name)
+                continue
+            # Pasta do lote baseada na pasta monitorada (original_path), nunca no temp.
+            target_pdf_dir = batch_dir or str(
+                Path(str(item.get("original_path") or source)).parent / "PDF" / f"lote_{batch_index:03d}"
+            )
+            try:
+                pdf_path = convert_to_pdf_in_folder(str(source), target_pdf_dir, log)
+            except Exception as exc:
+                update_file(session, file_id, {"status": "manual_review", "last_error": f"Falha na conversao PDF para reenvio: {exc}"})
+                log("warning", f"Falha ao converter para PDF (reenvio): {name}: {exc}", file_id=file_id, automation_id=automation_id)
+                conversion_failed.append(name)
+                continue
+            update_file(
+                session,
+                file_id,
+                {"pdf_path": pdf_path, "converted_to_pdf": True, "status": "pending_retry", "playground_status": "Pending", "last_error": None},
+            )
+            resent_names.append(name)
+            resend_files.append(
+                {
+                    "file_id": file_id,
+                    "file_name": Path(pdf_path).name,
+                    # Nome original (pre-conversao) para correlacao por nome no backend, ja que
+                    # 'file_name' agora e o do PDF. Lookup primario continua sendo por file_id.
+                    "original_file_name": item.get("file_name") or name,
+                    "path": pdf_path,
+                    "temp_path": pdf_path,
+                    "original_path": item.get("original_path") or source,
+                    "batch_number": batch_index,
+                    "batch_folder_path": target_pdf_dir,
+                    "attempts": int(item.get("attempts") or 0) + 1,
+                }
+            )
     return resend_files, resent_names, conversion_failed
 
 
@@ -1030,9 +1055,13 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
     # Converte os nao-Ready (ja deletados na web, ou ausentes) para PDF na pasta 'PDF'
     # (FORA do temp) e reenvia em UMA unica task, sem monitorar novamente.
     pdf_dir = _pdf_dir_for_resend(payload, files, to_resend_names)
+    try:
+        resend_batch_size = max(1, int(payload.get("batch_size") or settings.UPLOAD_BATCH_SIZE))
+    except (TypeError, ValueError):
+        resend_batch_size = max(1, int(settings.UPLOAD_BATCH_SIZE))
     items = [{**_item_by_name(files, file_name, log), "resend_name": file_name} for file_name in to_resend_names]
     resend_files, resent_names, conversion_failed = _build_resend_batch(
-        session, items, pdf_dir, log, automation_id=automation_id, should_continue=should_continue
+        session, items, pdf_dir, log, automation_id=automation_id, should_continue=should_continue, batch_size=resend_batch_size
     )
 
     for file_name in conversion_failed:
@@ -1045,7 +1074,8 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
             **payload,
             "user_id": user_id,
             "files": resend_files,
-            "batch_size": max(1, len(resend_files)),
+            # Reenvio agora vai EM LOTES (lote_NNN); mantem o mesmo tamanho de lote do upload.
+            "batch_size": resend_batch_size,
             "temp_folder_path": pdf_dir or payload.get("temp_folder_path"),
             # Reenvio NAO deve disparar novo monitoramento.
             "start_monitoring_after_upload": False,
@@ -1063,9 +1093,13 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
         )
         log(
             "info",
-            f"Reenvio (PDF) enfileirado sem novo monitoramento: task {resend_task_id}",
+            f"Reenvio (PDF) enfileirado em lotes, sem novo monitoramento: task {resend_task_id}",
             automation_id=automation_id,
-            metadata={"files": [item["file_name"] for item in resend_files]},
+            metadata={
+                "files": [item["file_name"] for item in resend_files],
+                "batch_count": len({item.get("batch_folder_path") for item in resend_files}),
+                "batch_size": resend_batch_size,
+            },
         )
 
     # Alinha o resultado com o que o backend (update_files_from_result) usa para gravar status:
@@ -1126,8 +1160,12 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
         fallback_source,
         payload.get("temp_folder_path"),
     )
+    try:
+        resend_batch_size = max(1, int(payload.get("batch_size") or settings.UPLOAD_BATCH_SIZE))
+    except (TypeError, ValueError):
+        resend_batch_size = max(1, int(settings.UPLOAD_BATCH_SIZE))
     resend_files, resent_names, conversion_failed = _build_resend_batch(
-        session, pending_items, pdf_dir, log, automation_id=automation_id, should_continue=should_continue
+        session, pending_items, pdf_dir, log, automation_id=automation_id, should_continue=should_continue, batch_size=resend_batch_size
     )
     if not resend_files:
         raise ManualReviewRequired("Conversao para PDF falhou em todos os arquivos do reenvio.")
@@ -1136,7 +1174,8 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
         **payload,
         "user_id": user_id,
         "files": resend_files,
-        "batch_size": max(1, len(resend_files)),
+        # Reenvio agora vai EM LOTES (lote_NNN); mantem o mesmo tamanho de lote do upload.
+        "batch_size": resend_batch_size,
         "temp_folder_path": pdf_dir or payload.get("temp_folder_path"),
         # Reenvio NAO deve disparar novo monitoramento.
         "start_monitoring_after_upload": False,
@@ -1151,11 +1190,12 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
         "resent": [item["file_name"] for item in resend_files],
         "conversion_failed": conversion_failed,
     }
+    resend_batch_count = len({item.get("batch_folder_path") for item in resend_files})
     log(
         "info",
-        f"Reenvio (PDF, lote unico) enfileirado: task {upload_task_id}",
+        f"Reenvio (PDF) enfileirado em {resend_batch_count} lote(s): task {upload_task_id}",
         automation_id=automation_id,
-        metadata={"files": [item["file_name"] for item in resend_files]},
+        metadata={"files": [item["file_name"] for item in resend_files], "batch_count": resend_batch_count, "batch_size": resend_batch_size},
     )
     complete_task(session, task_id, result)
 
