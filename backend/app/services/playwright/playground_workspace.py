@@ -525,6 +525,7 @@ def create_playground_workspace(
     user_id: int | None,
     payload: dict[str, Any],
     log: Callable,
+    should_continue: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     workspace_name = str(payload.get("workspace_name") or payload.get("name") or "").strip()
     if not workspace_name:
@@ -540,7 +541,7 @@ def create_playground_workspace(
         page = browser.page
         log("info", "Chromium iniciado.")
         page.goto(configured_playground_url(payload), wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
-        ensure_logged_in(page, payload, log)
+        ensure_logged_in(page, payload, log, should_continue)
         open_all_workspaces(page, log)
         click_create_workspace(page, log)
         fill_field(page, WORKSPACE_NAME_FIELDS, workspace_name, required=True)

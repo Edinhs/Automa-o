@@ -87,6 +87,7 @@ def add_playground_user_to_workspace(
     user_id: int | None,
     payload: dict[str, Any],
     log: Callable,
+    should_continue: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     workspace_name = str(payload.get("workspace_name") or "").strip()
     identifier = str(
@@ -112,7 +113,7 @@ def add_playground_user_to_workspace(
         page = browser.page
         log("info", "Chromium iniciado.")
         page.goto(configured_playground_url(payload), wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
-        ensure_logged_in(page, payload, log)
+        ensure_logged_in(page, payload, log, should_continue)
         open_workspace(page, workspace_name, log, expected_area="users")
         click_user_management(page, log)
         if identifier.lower() in page_text(page).lower() and role.lower() in page_text(page).lower():

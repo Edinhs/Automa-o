@@ -48,18 +48,20 @@ POWERPOINT_COM_EXTENSIONS = {".ppt", ".pptx", ".pptm", ".odp"}
 SUPPORTED_OFFICE_EXTENSIONS = WORD_COM_EXTENSIONS | EXCEL_COM_EXTENSIONS | POWERPOINT_COM_EXTENSIONS
 DEFAULT_BROWSER_RESTART_ATTEMPTS = 2
 SAME_SESSION_RECOVERY_ATTEMPTS = 2
-# Segundos sem o indicador "Uploading Files" necessarios para confirmar a conclusao do
-# lote quando o Playground nao exibe um texto explicito de "Upload complete".
-UPLOAD_COMPLETE_STABLE_SECONDS = 3
-# Tempo maximo aguardando o lote iniciar o envio (verde "Uploading Files") ou dar erro
-# (vermelho "Upload Error") apos clicar no Upload Files final.
-BATCH_SENT_TIMEOUT_SECONDS = 30
-# Janela curta apos o verde "Uploading Files" durante a qual ainda vigiamos o aparecimento
-# de "Upload Error" (o erro costuma surgir no ultimo arquivo) antes de seguir ao proximo lote.
-POST_SENT_ERROR_WATCH_SECONDS = 5
-# Tempo maximo aguardando a conclusao total do ultimo lote antes de fechar o navegador,
-# para nao truncar o envio do ultimo conjunto de arquivos.
-FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS = 180
+# SLAs de confirmacao de upload -- valores default em settings (config.py), ajustaveis via .env
+# sem rebuild. Mantemos os nomes de modulo como alias para nao mexer nos usos existentes.
+# - UPLOAD_COMPLETE_STABLE_SECONDS: segundos sem "Uploading Files" para confirmar a conclusao do
+#   lote quando o Playground nao exibe um texto explicito de "Upload complete".
+UPLOAD_COMPLETE_STABLE_SECONDS = settings.UPLOAD_COMPLETE_STABLE_SECONDS
+# - BATCH_SENT_TIMEOUT_SECONDS: tempo maximo aguardando o lote iniciar o envio (verde "Uploading
+#   Files") ou dar erro (vermelho "Upload Error") apos clicar no Upload Files final.
+BATCH_SENT_TIMEOUT_SECONDS = settings.BATCH_SENT_TIMEOUT_SECONDS
+# - POST_SENT_ERROR_WATCH_SECONDS: janela curta apos o verde durante a qual ainda vigiamos o
+#   aparecimento de "Upload Error" (costuma surgir no ultimo arquivo) antes do proximo lote.
+POST_SENT_ERROR_WATCH_SECONDS = settings.POST_SENT_ERROR_WATCH_SECONDS
+# - FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS: tempo maximo aguardando a conclusao total do ultimo lote
+#   antes de fechar o navegador, para nao truncar o envio do ultimo conjunto de arquivos.
+FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS = settings.FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS
 
 
 def check_continue(should_continue: Callable[[], bool] | None) -> None:

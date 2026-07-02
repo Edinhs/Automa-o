@@ -227,6 +227,28 @@ def stop_checker(session: requests.Session, task_id: int, automation_id: int | N
     return should_continue
 
 
+def task_stop_checker(session: requests.Session, task_id: int, automation_id: int | None, log):
+    """Como stop_checker, mas tambem detecta o cancelamento da PROPRIA task (GET
+    /api/agents/tasks/{id}/status). Usado nas tarefas 'rapidas' (connect_playground_session /
+    create_playground_workspace / add_playground_user_to_workspace) que podem nao ter
+    automation_id -- assim o botao 'parar' interrompe ate um login manual em andamento, que so
+    sairia pelo timeout de MANUAL_LOGIN_TIMEOUT_MINUTES."""
+    def should_continue() -> bool:
+        if not ensure_automation_active(session, automation_id, log):
+            raise AutomationStopped("Automacao parada pelo usuario.")
+        try:
+            info = get_json(session, f"/api/agents/tasks/{task_id}/status")
+        except Exception:
+            # Falha transitoria de rede nao deve abortar a tarefa; tenta de novo no proximo ciclo.
+            return True
+        status = str(info.get("status") or "").lower()
+        if info.get("is_deleted") or status == "cancelled":
+            raise AutomationStopped("Task cancelada pelo usuario.")
+        return True
+
+    return should_continue
+
+
 def create_agent_task(session: requests.Session, task_type: str, payload: dict[str, Any], max_attempts: int | None = None) -> int:
     user_id = payload.get("user_id") or payload.get("requested_by")
     response = post_json(
@@ -288,11 +310,25 @@ def checkpoint_uploaded_batch(
                 metadata={"batch_number": batch_number, "batch_folder_path": batch_folder_path, "error": str(exc)},
             )
             if attempt < BATCH_CHECKPOINT_ATTEMPTS:
-                time.sleep(1)
+                # Backoff progressivo (1s, 2s, 4s...) para absorver instabilidades breves de rede
+                # antes de escalar para revisao manual.
+                time.sleep(2 ** (attempt - 1))
     raise ManualReviewRequired(
         f"Lote {batch_number} pode ter sido enviado ao Playground, mas o checkpoint nao foi persistido; "
         "nenhum lote posterior sera enviado ate revisao."
     ) from last_error
+
+
+def resolve_batch_size(payload: dict[str, Any] | None = None, default: int | None = None) -> int:
+    """Tamanho do lote de upload: payload['batch_size'] (ou 'default') -> settings.UPLOAD_BATCH_SIZE,
+    sempre >= 1. Centraliza o parsing antes duplicado em 4 pontos, para a regra de fallback nunca
+    divergir silenciosamente entre os caminhos de upload e de reenvio."""
+    raw = (payload or {}).get("batch_size")
+    fallback = default if default is not None else settings.UPLOAD_BATCH_SIZE
+    try:
+        return max(1, int(raw or fallback))
+    except (TypeError, ValueError):
+        return max(1, int(settings.UPLOAD_BATCH_SIZE))
 
 
 def update_automation_status(session: requests.Session, automation_id: int | None, status: str) -> None:
@@ -600,10 +636,7 @@ def prepare_folder_upload_payload(
         log("info", message, automation_id=automation_id, metadata={"folder_path": normalized_folder, **scan_stats})
         return payload, {"status": "no_changes", "message": message, "scan_stats": scan_stats}
 
-    try:
-        staging_batch_size = max(1, int(payload.get("batch_size") or settings.UPLOAD_BATCH_SIZE))
-    except (TypeError, ValueError):
-        staging_batch_size = max(1, int(settings.UPLOAD_BATCH_SIZE))
+    staging_batch_size = resolve_batch_size(payload)
     staged_files, copy_stats = copy_files_to_staging(
         automation_id=int(automation_id or 0),
         automation_name=payload.get("automation_name"),
@@ -706,7 +739,12 @@ def prepare_folder_upload_payload(
 
 def process_connect(session: requests.Session, task: dict[str, Any], payload: dict[str, Any], user_id: Optional[int], log) -> None:
     task_id = task["id"]
-    result = connect_playground_session(task_id=task_id, user_id=user_id, payload=payload, log=log)
+    # Tarefa 'rapida' sem automation_id: usa o checker que tambem detecta cancelamento da propria
+    # task, para o botao "parar" interromper um login manual em andamento.
+    should_continue = task_stop_checker(session, task_id, payload.get("automation_id"), log)
+    result = connect_playground_session(
+        task_id=task_id, user_id=user_id, payload=payload, log=log, should_continue=should_continue
+    )
     complete_task(
         session,
         task_id,
@@ -720,12 +758,18 @@ def process_connect(session: requests.Session, task: dict[str, Any], payload: di
 
 
 def process_workspace_create(session: requests.Session, task: dict[str, Any], payload: dict[str, Any], user_id: Optional[int], log) -> None:
-    result = create_playground_workspace(task_id=task["id"], user_id=user_id, payload=payload, log=log)
+    should_continue = task_stop_checker(session, task["id"], payload.get("automation_id"), log)
+    result = create_playground_workspace(
+        task_id=task["id"], user_id=user_id, payload=payload, log=log, should_continue=should_continue
+    )
     complete_task(session, task["id"], result)
 
 
 def process_add_user(session: requests.Session, task: dict[str, Any], payload: dict[str, Any], user_id: Optional[int], log) -> None:
-    result = add_playground_user_to_workspace(task_id=task["id"], user_id=user_id, payload=payload, log=log)
+    should_continue = task_stop_checker(session, task["id"], payload.get("automation_id"), log)
+    result = add_playground_user_to_workspace(
+        task_id=task["id"], user_id=user_id, payload=payload, log=log, should_continue=should_continue
+    )
     complete_task(session, task["id"], result)
 
 
@@ -825,15 +869,31 @@ def process_upload(session: requests.Session, task: dict[str, Any], payload: dic
             return
         log("info", "Upload concluido; monitoramento foi enfileirado por lote confirmado.", automation_id=automation_id)
     except Exception as upload_exc:
-        # FIX (MEDIUM): Previne registros zumbis no banco. Se a task falhou, marca todos os arquivos
-        # que ainda estao em "pending" (nao foram enviados com sucesso) como "error".
+        # FIX (MEDIUM): Previne registros zumbis no banco. Se a task falhou, os arquivos ainda
+        # "pending" (nao enviados) nao podem ficar num limbo. Quando a causa e ManualReviewRequired
+        # (ex.: checkpoint de um lote nao confirmou -> os lotes POSTERIORES nunca chegaram a ser
+        # enviados), o desfecho da task e "revisao manual", nao "falha definitiva": marca esses
+        # arquivos como manual_review (nao error), para o status do arquivo bater com o da task.
+        # Qualquer outra excecao -> error, como antes.
+        is_manual_review = isinstance(upload_exc, ManualReviewRequired)
         for file_item in payload.get("files") or []:
             file_id = file_item.get("file_id")
             if file_id and int(file_id) not in uploaded_file_ids:
-                on_file_error(
-                    file_id,
-                    f"Upload abortado devido a falha na task: {upload_exc}",
-                )
+                if is_manual_review:
+                    update_file(
+                        session,
+                        file_id,
+                        {
+                            "status": "manual_review",
+                            "playground_status": "Pending",
+                            "last_error": f"Upload interrompido para revisao manual: {upload_exc}",
+                        },
+                    )
+                else:
+                    on_file_error(
+                        file_id,
+                        f"Upload abortado devido a falha na task: {upload_exc}",
+                    )
         raise
 
 
@@ -890,11 +950,17 @@ def _pdf_dir_for_reprocess(
     folder_path: Optional[str],
     fallback_source: Optional[str] = None,
     temp_folder_path: Optional[str] = None,
+    run_token: Optional[str] = None,
 ) -> Optional[str]:
     """Pasta 'PDF' (FORA do temp) onde os arquivos sao convertidos e mantidos para reenvio.
 
     Prioridade: pasta monitorada (folder_path)/PDF -> parent do arquivo de origem real/PDF
     -> (ultimo recurso) temp_folder_path/PDF. Mantem os PDFs fora do temp e por automacao.
+
+    'run_token' (ex.: id da task de reprocesso) cria uma subpasta unica por execucao
+    (PDF/{run_token}), para que reprocessamentos concorrentes da MESMA automacao nao misturem
+    arquivos na mesma pasta -- diferente do _pdf_dir_for_resend, que ja herda um staging_dir
+    timestamped e por isso e unico "de graca". Preserva a rastreabilidade de auditoria.
     """
     base: Optional[str] = None
     if folder_path:
@@ -903,7 +969,10 @@ def _pdf_dir_for_reprocess(
         base = str(Path(str(fallback_source)).parent)
     if not base and temp_folder_path:
         base = temp_folder_path
-    return str(Path(base) / "PDF") if base else None
+    if not base:
+        return None
+    pdf_base = Path(base) / "PDF"
+    return str(pdf_base / str(run_token)) if run_token else str(pdf_base)
 
 
 def _pdf_dir_for_resend(payload: dict[str, Any], files: list[Any], to_resend_names: list[str]) -> Optional[str]:
@@ -952,10 +1021,7 @@ def _build_resend_batch(
     gigante. Deixa SOMENTE o PDF convertido na pasta do lote; falha de um arquivo nao derruba os
     demais: ele vira manual_review e o lote segue. Retorna (resend_files, resent_names, failed).
     """
-    try:
-        size = max(1, int(batch_size or settings.UPLOAD_BATCH_SIZE))
-    except (TypeError, ValueError):
-        size = max(1, int(settings.UPLOAD_BATCH_SIZE))
+    size = resolve_batch_size(default=batch_size)
     # Base da pasta PDF: usa pdf_dir; se ausente, deriva do primeiro item com origem real
     # (pasta monitorada, nunca o temp). As subpastas 'lote_NNN' ficam dentro dela.
     base_pdf_dir = pdf_dir
@@ -1055,10 +1121,7 @@ def process_monitor(session: requests.Session, task: dict[str, Any], payload: di
     # Converte os nao-Ready (ja deletados na web, ou ausentes) para PDF na pasta 'PDF'
     # (FORA do temp) e reenvia em UMA unica task, sem monitorar novamente.
     pdf_dir = _pdf_dir_for_resend(payload, files, to_resend_names)
-    try:
-        resend_batch_size = max(1, int(payload.get("batch_size") or settings.UPLOAD_BATCH_SIZE))
-    except (TypeError, ValueError):
-        resend_batch_size = max(1, int(settings.UPLOAD_BATCH_SIZE))
+    resend_batch_size = resolve_batch_size(payload)
     items = [{**_item_by_name(files, file_name, log), "resend_name": file_name} for file_name in to_resend_names]
     resend_files, resent_names, conversion_failed = _build_resend_batch(
         session, items, pdf_dir, log, automation_id=automation_id, should_continue=should_continue, batch_size=resend_batch_size
@@ -1159,11 +1222,9 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
         payload.get("folder_path") or payload.get("source_folder_path"),
         fallback_source,
         payload.get("temp_folder_path"),
+        run_token=f"reprocess_{task_id}",
     )
-    try:
-        resend_batch_size = max(1, int(payload.get("batch_size") or settings.UPLOAD_BATCH_SIZE))
-    except (TypeError, ValueError):
-        resend_batch_size = max(1, int(settings.UPLOAD_BATCH_SIZE))
+    resend_batch_size = resolve_batch_size(payload)
     resend_files, resent_names, conversion_failed = _build_resend_batch(
         session, pending_items, pdf_dir, log, automation_id=automation_id, should_continue=should_continue, batch_size=resend_batch_size
     )

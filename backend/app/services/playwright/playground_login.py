@@ -125,10 +125,18 @@ def fill_network_id_if_possible(page, payload: dict[str, Any], log: Callable) ->
     return filled
 
 
-def wait_for_login_completion(page, log: Callable, timeout_minutes: int | None = None) -> None:
+def wait_for_login_completion(
+    page,
+    log: Callable,
+    timeout_minutes: int | None = None,
+    should_continue: Callable[[], bool] | None = None,
+) -> None:
     log("warning", "Login manual necessario: conclua o login no Chromium aberto para continuar a automacao.")
     deadline = time.monotonic() + ((timeout_minutes or settings.MANUAL_LOGIN_TIMEOUT_MINUTES) * 60)
     while time.monotonic() < deadline:
+        # Deixa o botao "parar" interromper o login manual em vez de ficar preso ate o timeout.
+        if should_continue:
+            should_continue()
         if is_logged_in(page):
             log("info", "Login confirmado.")
             return
@@ -136,13 +144,18 @@ def wait_for_login_completion(page, log: Callable, timeout_minutes: int | None =
     raise PlaygroundLoginTimeout("Timeout aguardando login manual no Playground GenAI.")
 
 
-def ensure_logged_in(page, payload: dict[str, Any], log: Callable) -> bool:
+def ensure_logged_in(
+    page,
+    payload: dict[str, Any],
+    log: Callable,
+    should_continue: Callable[[], bool] | None = None,
+) -> bool:
     if is_logged_in(page):
         log("info", "Sessao ja conectada.")
         return True
     click_stellantis_login_if_visible(page, log)
     fill_network_id_if_possible(page, payload, log)
-    wait_for_login_completion(page, log, payload.get("manual_login_timeout_minutes"))
+    wait_for_login_completion(page, log, payload.get("manual_login_timeout_minutes"), should_continue)
     return False
 
 
@@ -151,6 +164,7 @@ def connect_playground_session(
     user_id: int | None,
     log: Callable,
     payload: dict[str, Any] | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> PlaygroundConnectResult:
     payload = payload or {}
     url = configured_playground_url(payload)
@@ -166,6 +180,8 @@ def connect_playground_session(
         page = browser.page
         log("info", "Playground acessado.")
         page.goto(url, wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
+        if should_continue:
+            should_continue()
 
         already_connected = is_logged_in(page)
         if already_connected:
@@ -173,7 +189,7 @@ def connect_playground_session(
         else:
             click_stellantis_login_if_visible(page, log)
             fill_network_id_if_possible(page, payload, log)
-            wait_for_login_completion(page, log, payload.get("manual_login_timeout_minutes"))
+            wait_for_login_completion(page, log, payload.get("manual_login_timeout_minutes"), should_continue)
 
         log("info", "Sessao salva.")
         return PlaygroundConnectResult(
