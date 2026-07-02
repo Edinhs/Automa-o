@@ -38,7 +38,6 @@ RELEASES_DIR = ROOT / "releases"
 # Operational launchers shipped with every update (stop_all + restart included).
 ROOT_FILES = [
     ".env.example",
-    ".gitignore",
     "build_release_empty_db.bat",
     "build_update_package.bat",
     "setup_backend.bat",
@@ -68,7 +67,10 @@ DOC_FILES = [
 # backend/app/routers/custom_automations.py). copy_dir ignora __pycache__/.pyc automaticamente.
 ROOT_DIRS = ["dist", "public", "scripts", "custom_automations"]
 BACKEND_FILES = ["requirements.txt", ".env.example", "alembic.ini"]
-BACKEND_DIRS = ["app", "alembic", "scripts"]
+# NAO inclui "scripts": backend/scripts sao testes/dumps de DEV (test_*.py, *_dump.json) que o
+# backend nao importa em runtime -- alinhado ao strict builder (build_release_empty_db.py), que
+# tambem omite backend/scripts. Incluir vazava testes de dev na instalacao corporativa.
+BACKEND_DIRS = ["app", "alembic"]
 
 
 def is_forbidden(relative: str, name: str, suffix: str, parts: set[str]) -> bool:
@@ -83,6 +85,9 @@ def is_forbidden(relative: str, name: str, suffix: str, parts: set[str]) -> bool
         return True
     # dist/ carries tracked *.bak_* hand-edit backups that must not ship.
     if ".bak" in name:
+        return True
+    # Testes de dev soltos (ex.: custom_automations/.../test_ipc_updater.py) nunca vao ao pacote.
+    if name.startswith("test_") and name.endswith(".py"):
         return True
     return False
 

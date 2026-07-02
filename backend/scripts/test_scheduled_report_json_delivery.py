@@ -98,6 +98,9 @@ def main() -> int:
                 next_run_at=past,
                 run_date=past,
                 start_date=past,
+                # Entrega para a pasta do .env virou opt-in por agendamento (deliver_to_folder);
+                # este teste valida justamente o caminho de entrega, entao habilita o flag.
+                deliver_to_folder=True,
             )
             db.add(xlsx_sched)
             db.commit()
@@ -113,6 +116,7 @@ def main() -> int:
                 next_run_at=past,
                 run_date=past,
                 start_date=past,
+                deliver_to_folder=True,
             )
             db.add(json_sched)
             db.commit()

@@ -83,6 +83,9 @@ def ignore_runtime(dir_path: str, names: list[str]) -> set[str]:
             or name in FORBIDDEN_FILE_NAMES
             or path.suffix.lower() in FORBIDDEN_SUFFIXES
             or ".bak" in name
+            # Testes de dev soltos (ex.: custom_automations/.../test_ipc_updater.py) nunca vao ao
+            # release -- o backend nao os importa em runtime.
+            or (name.startswith("test_") and name.endswith(".py"))
         ):
             ignored.add(name)
     return ignored
@@ -123,6 +126,7 @@ def forbidden_entries(release_dir: Path) -> list[str]:
             or path.name in FORBIDDEN_FILE_NAMES
             or path.suffix.lower() in FORBIDDEN_SUFFIXES
             or ".bak" in path.name
+            or (path.name.startswith("test_") and path.suffix.lower() == ".py")
             or relative in FORBIDDEN_RELATIVE_PATHS
             or any(relative.startswith(prefix) for prefix in FORBIDDEN_RELATIVE_PREFIXES)
         ):
@@ -198,7 +202,17 @@ def main() -> int:
         zip_path.unlink()
         zip_path = create_zip(release_dir)
     print("\n".join(validation))
-    return 1 if forbidden else 0
+    # Gate real: a politica central e offline (sem download). Se o Chromium 1217 nao foi
+    # empacotado (cache ms-playwright ausente), o release viola a politica -> falha o build em vez
+    # de sair 0 silenciosamente com has_offline_chromium=False.
+    chromium_ok = (backend_dst / PLAYWRIGHT_RUNTIME_DIR / "chromium-1217").exists()
+    if not chromium_ok:
+        print(
+            "ERRO: Chromium offline (chromium-1217) ausente no pacote. A politica de release exige "
+            "o browser offline embarcado. Popule o cache ms-playwright e rode novamente.",
+            file=sys.stderr,
+        )
+    return 1 if (forbidden or not chromium_ok) else 0
 
 
 if __name__ == "__main__":

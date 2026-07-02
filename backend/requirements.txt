@@ -13,3 +13,8 @@ msal
 playwright==1.59.0
 openpyxl
 reportlab
+# Feature Automacoes Personalizadas / IPC Workspace Updater (custom_automations/ipc_workspace_updater):
+# instaladas junto do backend para que rodem em notebook corporativo OFFLINE (o self-install do
+# run_ipc_updater.bat falha sem proxy liberado). import docx / import yaml.
+python-docx>=1.1.2
+pyyaml>=6.0.1

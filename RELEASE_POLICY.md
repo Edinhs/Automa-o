@@ -22,7 +22,9 @@ Este computador e o ambiente de desenvolvimento e teste local do projeto. A rele
 - `backend\alembic.ini`
 - `backend\ms-playwright`, contendo somente o runtime Chromium offline necessario
 - `backend\wheels`, quando existir
-- scripts `.bat` de setup/inicializacao/parada (`start_*`, `stop_all.bat`, `restart_services.bat`, `setup_backend.bat`)
+- `custom_automations` (feature IPC Workspace Updater; o router `backend\app\routers\custom_automations.py` a importa no startup -- sem ela o backend quebra por ImportError)
+- scripts `.bat` de setup/inicializacao/parada (`start_*`, `stop_all.bat`, `restart_services.bat`, `setup_backend.bat`) e `start_all_hidden.vbs`
+- `run_ipc_updater.bat` (launcher da feature IPC)
 - `scripts\build_release_empty_db.py`
 - `scripts\build_update_package.py`
 - documentacao de operacao e release
@@ -31,10 +33,12 @@ Este computador e o ambiente de desenvolvimento e teste local do projeto. A rele
 
 - `src`
 - `backend\tests`
+- `backend\scripts` (testes/dumps de desenvolvimento: `test_*.py`, `*_dump.json`, harnesses -- o backend nao os importa em runtime; ambos os builders os omitem)
 - `backend\requirements-dev.txt`
 - `backend\app\cli\seed_dev_data.py`
 - `backend\app\cli\smoke_schedule_runner.py`
 - `src\constants\mockData.js`
+- backups de hand-edit do bundle (`*.bak`, `*.bak-*`, `*.bak_*`)
 - `.env`
 - `backend\.env`
 - `backend\data\*.db`
@@ -70,9 +74,10 @@ atualizacao (overlay):
 
 - Gera `releases\hub_update_COMPLETO_YYYYMMDD_HHMMSS.zip` com as entradas na raiz
   (extrair por cima da instalacao sobrepoe os arquivos no lugar).
-- Inclui apenas a aplicacao: `backend\app`, `backend\alembic`, `dist`, `scripts`,
-  documentacao e os `.bat` de operacao -- incluindo `stop_all.bat` e
-  `restart_services.bat`.
+- Inclui apenas a aplicacao: `backend\app`, `backend\alembic`, `dist`, `public`,
+  `custom_automations`, os `scripts` de build da raiz, documentacao e os `.bat` de
+  operacao -- incluindo `stop_all.bat` e `restart_services.bat`. **NAO** inclui
+  `backend\scripts` (testes/dumps de dev).
 - **NAO inclui** banco de dados, `backend\data`, `.venv`, `node_modules` nem o
   Chromium offline (`backend\ms-playwright`). Por isso, aplicar o pacote
   **preserva o banco de dados e o estado de runtime** existentes.
