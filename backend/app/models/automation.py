@@ -20,11 +20,11 @@ class Automation(Base):
     max_retries = Column(Integer, nullable=True)
     keep_temp_on_error = Column(Boolean, default=True)
     convert_to_pdf_on_error = Column(Boolean, default=True)
-    full_execution = Column(Boolean, default=False)
+    full_execution = Column(Boolean, default=False, nullable=False)
     config_json = Column(Text, nullable=True)
 
     archived_at = Column(DateTime, nullable=True)
-    is_deleted = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

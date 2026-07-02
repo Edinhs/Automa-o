@@ -25,9 +25,9 @@ class Schedule(Base):
     report_format = Column(String, nullable=True)
     # Quando True, o relatorio gerado por este agendamento tambem e copiado para a pasta de entrega
     # (REPORT_DELIVERY_PATH do .env / Power Automate). Default False: relatorio fica so em REPORTS_PATH.
-    deliver_to_folder = Column(Boolean, default=False)
+    deliver_to_folder = Column(Boolean, default=False, nullable=False)
 
-    is_deleted = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

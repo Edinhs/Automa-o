@@ -26,7 +26,7 @@ class User(Base):
     theme_preference = Column(String, default=DEFAULT_THEME_PREFERENCE, nullable=False)
     
     archived_at = Column(DateTime, nullable=True)
-    is_deleted = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

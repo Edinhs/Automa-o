@@ -20,7 +20,7 @@ class AgentTask(Base):
     completed_at = Column(DateTime, nullable=True)
     failed_at = Column(DateTime, nullable=True)
 
-    is_deleted = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -36,7 +36,7 @@ class LocalAgent(Base):
     last_heartbeat_at = Column(DateTime, nullable=True)
     version = Column(String, nullable=True)
 
-    is_deleted = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
