@@ -1,10 +1,26 @@
 import os
+import re
 import sys
 import subprocess
 import logging
 from typing import Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
+
+# Allowlist do identificador de projeto: 'project' compoe caminhos de arquivo (get_workspace_dir) e
+# vira argumento de subprocess (run_ipc_updater.bat). Restringir a [A-Za-z0-9_-] impede path
+# traversal (ex.: '..\\..\\algo') e valores inesperados no argv.
+_PROJECT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_project(project: str) -> str:
+    project = (project or "").strip()
+    if not _PROJECT_RE.fullmatch(project):
+        raise HTTPException(
+            status_code=400,
+            detail="Parametro 'project' invalido: use apenas letras, numeros, '_' ou '-' (1-64 caracteres).",
+        )
+    return project
 
 # Permite importar db_helper a partir da pasta raiz
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
@@ -35,8 +51,8 @@ def get_workspace_dir(project: str) -> str:
 
 @router.post("/ipc/run")
 async def run_ipc_automation(req: RunRequest):
-    project = req.project
-    
+    project = _validate_project(req.project)
+
     # 1. Verifica se já está rodando
     if project in ACTIVE_RUNS:
         proc = ACTIVE_RUNS[project]["subprocess"]
@@ -107,6 +123,7 @@ async def run_ipc_automation(req: RunRequest):
 
 @router.get("/ipc/status")
 async def get_ipc_status(project: str = "J3U"):
+    project = _validate_project(project)
     if project in ACTIVE_RUNS:
         proc = ACTIVE_RUNS[project]["subprocess"]
         poll = proc.poll()
@@ -128,6 +145,7 @@ async def get_ipc_status(project: str = "J3U"):
 
 @router.get("/ipc/history")
 async def get_ipc_history(project: str = "J3U"):
+    project = _validate_project(project)
     db_path = get_db_path()
     db = DBHelper(db_path)
     
@@ -164,6 +182,7 @@ async def get_ipc_history(project: str = "J3U"):
 
 @router.get("/ipc/logs")
 async def get_ipc_logs(project: str = "J3U", lines_count: int = 100):
+    project = _validate_project(project)
     workspace_path = get_workspace_dir(project)
     log_file = os.path.join(workspace_path, "ipc_updater.log")
     

@@ -1,9 +1,12 @@
+import csv
+import io
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.execution import ExecutionLog
 from app.services.audit import create_log
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import StreamingResponse
 from app.core.timezone import sao_paulo_utc_iso
 
 router = APIRouter()
@@ -47,11 +50,34 @@ def post_log(data: dict, db: Session = Depends(get_db)):
     return log_out(log)
 
 @router.get("/export")
-def export_logs(db: Session = Depends(get_db)):
-    logs = db.query(ExecutionLog).all()
+def export_logs(limit: int = 50000, db: Session = Depends(get_db)):
+    # Limite + streaming: evita carregar toda a tabela em memoria de uma vez (antes: .all() sem
+    # teto). O csv.writer tambem escapa virgulas/aspas/quebras de linha na mensagem (antes a
+    # concatenacao crua quebrava o CSV / permitia injecao de coluna).
+    safe_limit = min(max(int(limit or 50000), 1), 200000)
     create_log(db, "info", "Exported logs", "system")
-    
-    csv_data = "id,level,message,created_at\n"
-    for log in logs:
-        csv_data += f"{log.id},{log.level},{log.message},{sao_paulo_utc_iso(log.created_at)}\n"
-    return PlainTextResponse(csv_data, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=logs.csv"})
+
+    def iter_csv():
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["id", "level", "message", "created_at"])
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+        query = (
+            db.query(ExecutionLog)
+            .order_by(ExecutionLog.created_at.desc(), ExecutionLog.id.desc())
+            .limit(safe_limit)
+            .yield_per(1000)
+        )
+        for log in query:
+            writer.writerow([log.id, log.level, log.message, sao_paulo_utc_iso(log.created_at)])
+            yield buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate(0)
+
+    return StreamingResponse(
+        iter_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=logs.csv"},
+    )

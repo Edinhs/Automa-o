@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import SUPPORTED_ENVIRONMENTS, environment_scope, settings
 from app.core.timezone import now_sao_paulo_naive, parse_sao_paulo_datetime, to_sao_paulo_naive
-from app.db.session import SessionLocal, session_for_environment
+from app.db.session import session_for_environment
 from app.models.automation import Automation
 from app.models.schedule import Schedule
 from app.routers.automations import create_upload_task_for_automation
@@ -389,7 +389,11 @@ def run_due_schedule(db: Session, schedule: Schedule, now: datetime | None = Non
 
 def run_due_schedules_once(now: datetime | None = None, db: Session | None = None) -> int:
     own_session = db is None
-    db = db or SessionLocal()
+    # Resolve a sessao pelo ambiente corrente (ContextVar), NAO por SessionLocal (que fica fixo em
+    # 'operational' no import-time). Sem isso, uma chamada sem `db` fora de
+    # run_due_schedules_for_all_environments processaria agendamentos contra o banco errado,
+    # quebrando o isolamento dual-environment.
+    db = db or session_for_environment()
     triggered = 0
     try:
         hydrate_missing_next_runs(db, now)

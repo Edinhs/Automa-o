@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     OPERATIONAL_SCREENSHOTS_ERROR_PATH: str = ""
     DEVELOPER_SCREENSHOTS_ERROR_PATH: str = "./data/developer/screenshots/errors"
     UPLOAD_BATCH_SIZE: int = 5
+    # SLAs de confirmacao de upload (segundos) -- externalizados para permitir ajuste operacional
+    # via .env sem rebuild. NAO enfraquecer a heuristica de confirmacao ao mexer nesses valores.
+    UPLOAD_COMPLETE_STABLE_SECONDS: int = 3
+    BATCH_SENT_TIMEOUT_SECONDS: int = 30
+    POST_SENT_ERROR_WATCH_SECONDS: int = 5
+    FINAL_BATCH_COMPLETE_TIMEOUT_SECONDS: int = 180
     DEFAULT_BATCH_INTERVAL_SECONDS: int = 8
     DEFAULT_MONITORING_TIMEOUT_MINUTES: int = 30
     DEFAULT_MONITOR_INTERVAL_SECONDS: int = 30

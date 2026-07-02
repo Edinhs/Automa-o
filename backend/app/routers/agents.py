@@ -258,21 +258,41 @@ def heartbeat(data: dict, db: Session = Depends(get_db)):
 def poll_tasks(data: Optional[dict] = None, db: Session = Depends(get_db)):
     data = data or {}
     agent_id = data.get("agent_id")
-    tasks = db.query(AgentTask).filter(
+    candidates = db.query(AgentTask).filter(
         AgentTask.status == "pending",
         AgentTask.is_deleted == False,
     ).order_by(
         (AgentTask.task_type != "connect_playground_session"),
         AgentTask.created_at.asc(),
     ).limit(5).all()
-    for task in tasks:
-        task.status = "running"
-        task.started_at = task.started_at or datetime.utcnow()
-        task.assigned_agent_id = agent_id or task.assigned_agent_id
-        task.attempts = (task.attempts or 0) + 1
+    now = datetime.utcnow()
+    claimed_ids: list[int] = []
+    for task in candidates:
+        # Claim ATOMICO: o UPDATE so vence se a linha AINDA estiver 'pending'. Se dois pollers
+        # concorrentes lerem a mesma task, apenas um obtem rowcount==1 -> nunca ha dupla-execucao
+        # (seguro tambem em Postgres READ COMMITTED, onde o SELECT nao bloqueia leitores; o guard
+        # no WHERE do UPDATE e reavaliado apos o lock de linha).
+        updated = (
+            db.query(AgentTask)
+            .filter(AgentTask.id == task.id, AgentTask.status == "pending")
+            .update(
+                {
+                    AgentTask.status: "running",
+                    AgentTask.started_at: task.started_at or now,
+                    AgentTask.assigned_agent_id: agent_id or task.assigned_agent_id,
+                    AgentTask.attempts: (task.attempts or 0) + 1,
+                },
+                synchronize_session=False,
+            )
+        )
+        if updated:
+            claimed_ids.append(task.id)
     db.commit()
-    for task in tasks:
-        db.refresh(task)
+    if not claimed_ids:
+        return {"tasks": []}
+    order = {task_id: index for index, task_id in enumerate(claimed_ids)}
+    tasks = db.query(AgentTask).filter(AgentTask.id.in_(claimed_ids)).all()
+    tasks.sort(key=lambda t: order.get(t.id, 0))
     return {"tasks": tasks}
 
 
@@ -334,6 +354,16 @@ def start_task(id: int, data: Optional[dict] = None, db: Session = Depends(get_d
     db.commit()
     create_log(db, "info", "Task running", "agent_task", task.id, user_id=task.created_by_id, task_id=task.id)
     return {"status": "running"}
+
+
+@router.get("/tasks/{id}/status")
+def task_status(id: int, db: Session = Depends(get_db)):
+    """Status leve da task para o agente detectar cancelamento durante esperas longas (ex.: login
+    manual no connect_playground_session, que nao tem automation_id para o stop via automacao)."""
+    task = db.query(AgentTask).filter(AgentTask.id == id).first()
+    if not task:
+        raise HTTPException(404)
+    return {"id": task.id, "status": task.status, "is_deleted": bool(task.is_deleted)}
 
 
 @router.put("/tasks/{id}/payload")

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.workspace import Workspace
@@ -79,10 +80,18 @@ def workspace_out(workspace: Workspace, db: Session = None) -> dict:
             WorkspaceFile.is_deleted == False
         ).count()
         
+        # Mesmo criterio de erro do Historico/relatorios (routers/executions.py):
+        # status local em {failed, manual_review} OU playground_status em {error, timeout, notfound}.
+        # Antes contava status.in_(["error","failed"]) -- "error" nao e status LOCAL (e valor de
+        # playground_status), entao manual_review nunca contava e o card divergia do Historico.
+        # Comparacao case-insensitive porque playground_status vem capitalizado ("Error"/"Ready").
         errors_count = db.query(WorkspaceFile).filter(
             file_query_filter,
             WorkspaceFile.is_deleted == False,
-            WorkspaceFile.status.in_(["error", "failed"])
+            or_(
+                func.lower(WorkspaceFile.status).in_(["failed", "manual_review"]),
+                func.lower(WorkspaceFile.playground_status).in_(["error", "timeout", "notfound"]),
+            ),
         ).count()
         
         last_file = db.query(WorkspaceFile).filter(

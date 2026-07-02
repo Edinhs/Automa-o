@@ -335,11 +335,20 @@ def log_to_dict(log: ExecutionLog) -> dict[str, Any]:
     }
 
 
-def entity_name(model: Any, db: Session, entity_id: int | None) -> str | None:
+def entity_name(model: Any, db: Session, entity_id: int | None, cache: dict | None = None) -> str | None:
     if not entity_id:
         return None
+    # Cache por-request opcional: no Historico, muitas linhas compartilham a mesma automacao/
+    # workspace (ex.: varios runs da mesma automacao), entao memoizar evita repetir o mesmo SELECT
+    # 3x por linha.
+    key = (model.__name__, entity_id) if cache is not None else None
+    if key is not None and key in cache:
+        return cache[key]
     item = db.query(model).filter(model.id == entity_id).first()
-    return getattr(item, "name", None) if item else None
+    name = getattr(item, "name", None) if item else None
+    if key is not None:
+        cache[key] = name
+    return name
 
 
 def group_files(db: Session, tasks: list[AgentTask]) -> list[dict[str, Any]]:
@@ -378,7 +387,7 @@ def resolve_group_tasks(db: Session, root_task: AgentTask) -> list[AgentTask]:
     return group or [root_task]
 
 
-def execution_out(db: Session, task: AgentTask, group: list[AgentTask] | None = None) -> dict[str, Any]:
+def execution_out(db: Session, task: AgentTask, group: list[AgentTask] | None = None, name_cache: dict | None = None) -> dict[str, Any]:
     """Serializa uma linha do Historico. Se 'group' for informado (varias tasks da mesma
     inicializacao: raiz + reenvios de PDF), agrega arquivos/contagens/tempo do grupo inteiro
     em UMA linha, identificada pela task RAIZ (a de menor id / sem origin_task_id)."""
@@ -424,11 +433,11 @@ def execution_out(db: Session, task: AgentTask, group: list[AgentTask] | None = 
         "run_code": f"TASK-{root.id:05d}",
         "task_type": root.task_type,
         "automation_id": automation_id,
-        "automation_name": entity_name(Automation, db, automation_id),
+        "automation_name": entity_name(Automation, db, automation_id, name_cache),
         "workspace_id": workspace_id,
-        "workspace_name": entity_name(Workspace, db, workspace_id) or payload.get("workspace_name"),
+        "workspace_name": entity_name(Workspace, db, workspace_id, name_cache) or payload.get("workspace_name"),
         "triggered_by_user_id": user_id,
-        "triggered_by_user_name": entity_name(User, db, user_id),
+        "triggered_by_user_name": entity_name(User, db, user_id, name_cache),
         "started_at": sao_paulo_utc_iso(started),
         "created_at": sao_paulo_utc_iso(root.created_at),
         "finished_at": sao_paulo_utc_iso(group_finished),
@@ -494,6 +503,7 @@ def list_executions(
 
     safe_limit = min(max(int(limit or 100), 1), 1000)
     rows: list[dict[str, Any]] = []
+    name_cache: dict = {}  # memoiza nomes de automacao/workspace/user entre as linhas da resposta
     # Ordena grupos pela task mais recente (maior started_at) dentro do grupo, para manter a
     # mesma ordenacao "mais recente primeiro" que a lista tinha antes do agrupamento.
     ordered_roots = sorted(
@@ -515,7 +525,7 @@ def list_executions(
         status_key = group_status(group) if len(group) > 1 else (root.status or "pending")
         if status_filter and status_key != status_filter:
             continue
-        rows.append(execution_out(db, root, group))
+        rows.append(execution_out(db, root, group, name_cache))
         if len(rows) >= safe_limit:
             break
     return rows

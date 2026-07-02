@@ -28,7 +28,13 @@ from app.routers.executions import (
     STATUS_LABELS,
     files_for_task,
     file_status_counts,
+    finished_at,
+    group_files,
+    group_status,
+    group_tasks_by_origin,
     normalize_text,
+    task_automation_id,
+    task_workspace_id,
 )
 from app.services.audit import create_log
 
@@ -417,48 +423,74 @@ def block_schedules(db: Session, filters: dict[str, Any], names: tuple[dict[int,
 
 def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
     automation_names, workspace_names = names
-    # Uma "execucao" = 1 upload_files_to_workspace (o run da automacao). As tarefas satelites do
-    # mesmo run (connect_playground_session, monitor_workspace_files_status, add_playground_user...,
-    # convert_and_retry_file) NAO contam como execucoes separadas -- mesmo criterio de
-    # list_executions em routers/executions.py, para o relatorio bater com o Historico ao vivo
-    # (1 run = 1 execucao, sem inflar).
-    query = db.query(AgentTask).filter(
-        AgentTask.is_deleted == False,
-        AgentTask.started_at.isnot(None),
-        AgentTask.task_type == "upload_files_to_workspace",
+    # Uma "execucao" = 1 INICIALIZACAO da automacao (nao 1 task). As tasks satelites do mesmo run
+    # (o reenvio de PDF pos-monitoramento, que tambem e upload_files_to_workspace e carrega
+    # origin_task_id) sao AGRUPADAS na task raiz -- exatamente como list_executions em
+    # routers/executions.py, para o relatorio bater com o Historico ao vivo (1 run = 1 linha
+    # agregada, sem inflar). Buscamos todas as upload_files_to_workspace, agrupamos por origem e
+    # so entao filtramos/agregamos no nivel do GRUPO.
+    all_tasks = (
+        db.query(AgentTask)
+        .filter(
+            AgentTask.is_deleted == False,
+            AgentTask.started_at.isnot(None),
+            AgentTask.task_type == "upload_files_to_workspace",
+        )
+        .order_by(AgentTask.started_at.desc(), AgentTask.id.desc())
+        .all()
     )
-    if filters["source_task_id"]:
-        query = query.filter(AgentTask.id == filters["source_task_id"])
+    groups = group_tasks_by_origin(all_tasks)
+    status_target = (
+        STATUS_FILTERS.get(normalize_text(filters["status"]), filters["status"])
+        if filters["status"]
+        else None
+    )
+    ordered_roots = sorted(
+        groups.keys(),
+        key=lambda rid: max((t.started_at for t in groups[rid] if t.started_at), default=datetime.min),
+        reverse=True,
+    )
     rows = []
-    for task in query.order_by(AgentTask.started_at.desc(), AgentTask.id.desc()).all():
-        payload = parse_json(task.payload_json)
-        automation_id = payload.get("automation_id")
-        workspace_id = payload.get("workspace_id")
-        
+    for root_id in ordered_roots:
+        group = groups[root_id]
+        root = min(group, key=lambda t: t.id)
+        payload = parse_json(root.payload_json)
+        automation_id = task_automation_id(root, payload)
+        workspace_id = task_workspace_id(root, payload)
+
+        # source_task_id pode ser a raiz OU uma task satelite do run -> casa com o grupo inteiro.
+        if filters["source_task_id"] and filters["source_task_id"] not in {t.id for t in group}:
+            continue
         if filters["automation_id"] and automation_id != filters["automation_id"]:
             continue
         if filters["workspace_id"] and workspace_id != filters["workspace_id"]:
             continue
-        if not within_period(task.started_at, filters["start"], filters["end"]):
+        group_started = min((t.started_at for t in group if t.started_at), default=root.started_at)
+        if not within_period(group_started, filters["start"], filters["end"]):
             continue
-        
-        files = files_for_task(db, task, payload)
+        status_key = group_status(group) if len(group) > 1 else (root.status or "pending")
+        if status_target and status_key != status_target:
+            continue
+
+        files = group_files(db, group) if len(group) > 1 else files_for_task(db, root, payload)
         counts = file_status_counts(files)
-        
-        status_label = STATUS_LABELS.get(task.status or "", task.status or "Pendente")
-        if filters["status"] and task.status != STATUS_FILTERS.get(normalize_text(filters["status"]), filters["status"]):
-            continue
-            
-        end = task.completed_at or task.failed_at or datetime.utcnow()
-        duration = max(int((end - task.started_at).total_seconds()), 0) if task.started_at else 0
-        
+        finished_candidates = [f for f in (finished_at(t) for t in group) if f]
+        group_finished = (
+            max(finished_candidates)
+            if finished_candidates and len(finished_candidates) == len(group)
+            else None
+        )
+        end = group_finished or datetime.utcnow()
+        duration = max(int((end - group_started).total_seconds()), 0) if group_started else 0
+        status_label = STATUS_LABELS.get(status_key, status_key)
+
         rows.append([
-            task.id,
-            task.task_type or "",
+            root.id,
+            root.task_type or "",
             automation_names.get(automation_id, automation_id or ""),
             workspace_names.get(workspace_id, workspace_id or payload.get("workspace_name") or ""),
-            fmt_utc(task.started_at),
-            fmt_utc(task.completed_at or task.failed_at),
+            fmt_utc(group_started),
+            fmt_utc(group_finished),
             duration,
             counts["total"],
             counts["success"],
