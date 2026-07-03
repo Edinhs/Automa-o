@@ -1,0 +1,687 @@
+from __future__ import annotations
+
+import ast
+import json
+import unicodedata
+from datetime import datetime
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.core.timezone import parse_sao_paulo_to_utc_naive, sao_paulo_utc_iso
+from app.db.session import get_db
+from app.models.agent import AgentTask
+from app.models.automation import Automation
+from app.models.execution import ExecutionLog
+from app.models.file import WorkspaceFile
+from app.models.user import User
+from app.models.workspace import Workspace
+
+router = APIRouter()
+
+STATUS_LABELS = {
+    "pending": "Pendente",
+    "running": "Em execução",
+    "completed": "Finalizada com sucesso",
+    "failed": "Finalizada com erro",
+    "manual_review": "Ação manual",
+    "cancelled": "Cancelada",
+}
+
+STATUS_FILTERS = {
+    "pendente": "pending",
+    "pending": "pending",
+    "em execucao": "running",
+    "running": "running",
+    "finalizada com sucesso": "completed",
+    "completed": "completed",
+    "finalizada com erro": "failed",
+    "failed": "failed",
+    "acao manual": "manual_review",
+    "manual_review": "manual_review",
+    "parada manualmente": "cancelled",
+    "cancelada": "cancelled",
+    "cancelled": "cancelled",
+}
+
+SUCCESS_FILE_STATUSES = {"ready", "uploaded", "resolved"}
+ERROR_FILE_STATUSES = {"failed", "manual_review"}
+ERROR_PLAYGROUND_STATUSES = {"error", "timeout", "notfound"}
+
+
+def parse_json_object(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            value = ast.literal_eval(raw)
+        except Exception:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def parse_datetime(value: str | None) -> datetime | None:
+    try:
+        return parse_sao_paulo_to_utc_naive(value)
+    except ValueError:
+        return None
+
+
+def normalize_text(value: str | None) -> str:
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in text if not unicodedata.combining(char))
+
+
+def normalize_status_filter(value: str | None) -> str | None:
+    key = normalize_text(value)
+    if not key or key == "todos":
+        return None
+    return STATUS_FILTERS.get(key, value)
+
+
+def task_payload(task: AgentTask) -> dict[str, Any]:
+    return parse_json_object(task.payload_json)
+
+
+def task_result(task: AgentTask) -> dict[str, Any]:
+    return parse_json_object(task.result_json)
+
+
+def task_automation_id(task: AgentTask, payload: dict[str, Any] | None = None) -> int | None:
+    value = (payload or task_payload(task)).get("automation_id")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def task_origin_id(task: AgentTask, payload: dict[str, Any] | None = None) -> int:
+    """Root task id of the initialization this task belongs to.
+
+    'upload_files_to_workspace' tasks created by create_upload_task_for_automation are the
+    ROOT of an initialization (no origin_task_id in their payload). Follow-up upload tasks
+    created by the agent for the SAME initialization (PDF resend in process_monitor /
+    process_convert_retry) carry 'origin_task_id' (or the legacy 'source_upload_task_id')
+    pointing back to that root -- propagated automatically via payload spread ({**payload}).
+    Falls back to the task's own id when absent (the task IS its own root, or it's a legacy
+    row created before this linkage existed / a standalone convert_and_retry_file resend,
+    which intentionally stays its own line -- see module docstring in list_executions).
+    """
+    payload = payload or task_payload(task)
+    value = payload.get("origin_task_id") or payload.get("source_upload_task_id")
+    try:
+        return int(value) if value is not None else task.id
+    except (TypeError, ValueError):
+        return task.id
+
+
+def task_workspace_id(task: AgentTask, payload: dict[str, Any] | None = None) -> int | None:
+    value = (payload or task_payload(task)).get("workspace_id")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def task_user_id(task: AgentTask, payload: dict[str, Any] | None = None) -> int | None:
+    payload = payload or task_payload(task)
+    value = task.created_by_id or payload.get("user_id") or payload.get("requested_by")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def task_file_refs(task: AgentTask, payload: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    payload = payload or task_payload(task)
+    refs: list[dict[str, Any]] = []
+    for item in payload.get("files") or []:
+        if isinstance(item, dict):
+            refs.append(item)
+    if payload.get("file_id") or payload.get("file_name"):
+        refs.append(
+            {
+                "file_id": payload.get("file_id"),
+                "file_name": payload.get("file_name"),
+                "path": payload.get("temp_path") or payload.get("original_path"),
+                "temp_path": payload.get("temp_path"),
+                "original_path": payload.get("original_path"),
+                "attempts": payload.get("attempts"),
+            }
+        )
+    return refs
+
+
+def unique_file_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for ref in refs:
+        key = str(ref.get("file_id") or ref.get("id") or ref.get("file_name") or ref.get("name") or "")
+        if not key:
+            key = json.dumps(ref, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ref)
+    return unique
+
+
+def task_file_ids(task: AgentTask, payload: dict[str, Any] | None = None) -> list[int]:
+    ids: list[int] = []
+    for ref in task_file_refs(task, payload):
+        value = ref.get("file_id") or ref.get("id")
+        try:
+            if value is not None:
+                file_id = int(value)
+                if file_id not in ids:
+                    ids.append(file_id)
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def file_to_dict(file: WorkspaceFile) -> dict[str, Any]:
+    return {
+        "id": file.id,
+        "file_name": file.file_name,
+        "original_path": file.original_path,
+        "temp_path": file.temp_path,
+        "pdf_path": file.pdf_path,
+        "extension": file.extension,
+        "size_bytes": file.size_bytes,
+        "workspace_id": file.workspace_id,
+        "automation_id": file.automation_id,
+        "status": file.status,
+        "local_status": file.status,
+        "playground_status": file.playground_status,
+        "workspace_status": file.playground_status,
+        "attempts": file.attempts,
+        "max_attempts": file.max_attempts,
+        "converted_to_pdf": file.converted_to_pdf,
+        "last_error": file.last_error,
+        "error_message": file.last_error,
+        "detected_at": sao_paulo_utc_iso(file.detected_at),
+        "uploaded_at": sao_paulo_utc_iso(file.uploaded_at),
+        "ready_at": sao_paulo_utc_iso(file.ready_at),
+        "failed_at": sao_paulo_utc_iso(file.failed_at),
+        "manual_review_at": sao_paulo_utc_iso(file.manual_review_at),
+        "created_at": sao_paulo_utc_iso(file.created_at),
+        "updated_at": sao_paulo_utc_iso(file.updated_at),
+    }
+
+
+def fallback_file_dict(ref: dict[str, Any], task: AgentTask, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": ref.get("file_id") or ref.get("id") or ref.get("file_name") or ref.get("name"),
+        "file_name": ref.get("file_name") or ref.get("name") or ref.get("path") or "-",
+        "original_path": ref.get("original_path") or ref.get("path"),
+        "temp_path": ref.get("temp_path") or ref.get("path"),
+        "pdf_path": ref.get("pdf_path"),
+        "workspace_id": task_workspace_id(task, payload),
+        "automation_id": task_automation_id(task, payload),
+        "status": ref.get("status") or "pending",
+        "local_status": ref.get("status") or "pending",
+        "playground_status": ref.get("playground_status") or "Pending",
+        "workspace_status": ref.get("playground_status") or "Pending",
+        "attempts": ref.get("attempts") or 0,
+        "max_attempts": ref.get("max_attempts") or payload.get("max_attempts"),
+        "converted_to_pdf": bool(ref.get("converted_to_pdf")),
+        "last_error": ref.get("last_error") or ref.get("error_message"),
+        "error_message": ref.get("error_message") or ref.get("last_error"),
+        "created_at": sao_paulo_utc_iso(task.created_at),
+        "updated_at": sao_paulo_utc_iso(task.updated_at),
+    }
+
+
+def files_for_task(db: Session, task: AgentTask, payload: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    payload = payload or task_payload(task)
+    refs = unique_file_refs(task_file_refs(task, payload))
+    ids = task_file_ids(task, payload)
+    db_files_by_id: dict[int, WorkspaceFile] = {}
+    if ids:
+        db_files_by_id = {
+            file.id: file
+            for file in db.query(WorkspaceFile).filter(WorkspaceFile.id.in_(ids), WorkspaceFile.is_deleted == False).all()
+        }
+
+    rows: list[dict[str, Any]] = []
+    emitted_ids: set[int] = set()
+    for ref in refs:
+        file_id = ref.get("file_id") or ref.get("id")
+        try:
+            numeric_id = int(file_id) if file_id is not None else None
+        except (TypeError, ValueError):
+            numeric_id = None
+        if numeric_id is not None and numeric_id in db_files_by_id:
+            rows.append(file_to_dict(db_files_by_id[numeric_id]))
+            emitted_ids.add(numeric_id)
+        else:
+            rows.append(fallback_file_dict(ref, task, payload))
+
+    for file_id, file in db_files_by_id.items():
+        if file_id not in emitted_ids:
+            rows.append(file_to_dict(file))
+    return rows
+
+
+def file_status_counts(files: list[dict[str, Any]]) -> dict[str, int]:
+    total = len(files)
+    success = 0
+    errors = 0
+    pending = 0
+    for file in files:
+        local_status = normalize_text(file.get("status") or file.get("local_status"))
+        workspace_status = normalize_text(file.get("playground_status") or file.get("workspace_status"))
+        if local_status in SUCCESS_FILE_STATUSES or workspace_status == "ready":
+            success += 1
+        elif local_status in ERROR_FILE_STATUSES or (workspace_status in ERROR_PLAYGROUND_STATUSES and local_status != "pending_retry"):
+            errors += 1
+        else:
+            pending += 1
+    return {"total": total, "success": success, "errors": errors, "pending": pending}
+
+
+def finished_at(task: AgentTask) -> datetime | None:
+    return task.completed_at or task.failed_at
+
+
+def duration_seconds(task: AgentTask) -> int | None:
+    if not task.started_at:
+        return None
+    end = finished_at(task) or datetime.utcnow()
+    return max(int((end - task.started_at).total_seconds()), 0)
+
+
+def task_status_label(task: AgentTask) -> str:
+    return STATUS_LABELS.get(task.status or "", task.status or "Pendente")
+
+
+# Prioridade para consolidar o status de um GRUPO de tasks da mesma inicializacao (raiz +
+# reenvios): se qualquer membro exige revisao manual, o grupo e manual_review; senao, se
+# qualquer um falhou, o grupo e failed; senao, se qualquer um ainda esta pendente/rodando, o
+# grupo reflete isso; caso contrario, sucesso (completed). Maior prioridade primeiro.
+GROUP_STATUS_PRIORITY = ["manual_review", "failed", "running", "pending", "cancelled", "completed"]
+
+
+def group_status(tasks: list[AgentTask]) -> str:
+    statuses = {task.status or "pending" for task in tasks}
+    for candidate in GROUP_STATUS_PRIORITY:
+        if candidate in statuses:
+            return candidate
+    return next(iter(statuses), "pending")
+
+
+def log_to_dict(log: ExecutionLog) -> dict[str, Any]:
+    log_type = str(log.level or "info").upper()
+    return {
+        "id": log.id,
+        "level": log.level,
+        "log_type": log_type,
+        "type": log_type,
+        "message": log.message,
+        "entity_type": log.entity_type,
+        "entity_id": log.entity_id,
+        "automation_id": log.automation_id,
+        "file_id": log.file_id,
+        "task_id": log.task_id,
+        "user_id": log.user_id,
+        "metadata_json": log.metadata_json,
+        "created_at": sao_paulo_utc_iso(log.created_at),
+        "timestamp": sao_paulo_utc_iso(log.created_at),
+    }
+
+
+def entity_name(model: Any, db: Session, entity_id: int | None, cache: dict | None = None) -> str | None:
+    if not entity_id:
+        return None
+    # Cache por-request opcional: no Historico, muitas linhas compartilham a mesma automacao/
+    # workspace (ex.: varios runs da mesma automacao), entao memoizar evita repetir o mesmo SELECT
+    # 3x por linha.
+    key = (model.__name__, entity_id) if cache is not None else None
+    if key is not None and key in cache:
+        return cache[key]
+    item = db.query(model).filter(model.id == entity_id).first()
+    name = getattr(item, "name", None) if item else None
+    if key is not None:
+        cache[key] = name
+    return name
+
+
+def group_files(db: Session, tasks: list[AgentTask]) -> list[dict[str, Any]]:
+    """Uniao dos arquivos de todas as tasks do grupo, dedupada por file_id (arquivos
+    reenviados aparecem na task raiz E na task de reenvio; contam uma unica vez, com o
+    status mais atual). Arquivos sem file_id (fallback snapshot) sao dedupados por nome."""
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    # Ordena do mais recente para o mais antigo: quando o mesmo file_id aparece em mais de
+    # uma task (reenvio), o snapshot da task MAIS RECENTE prevalece (mais proximo do estado atual).
+    for task in sorted(tasks, key=lambda t: (t.id), reverse=True):
+        for file in files_for_task(db, task):
+            key = str(file.get("id") or file.get("file_name") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(file)
+    return merged
+
+
+def resolve_group_tasks(db: Session, root_task: AgentTask) -> list[AgentTask]:
+    """Todas as upload_files_to_workspace nao deletadas cujo origin_task_id resolve para a
+    raiz de root_task (a propria root_task inclusa). Root de root_task = origin_task_id do
+    seu payload, se houver (caso ela mesma seja um reenvio), senao seu proprio id."""
+    root_payload = task_payload(root_task)
+    root_id = task_origin_id(root_task, root_payload)
+    candidates = (
+        db.query(AgentTask)
+        .filter(
+            AgentTask.is_deleted == False,
+            AgentTask.task_type == "upload_files_to_workspace",
+        )
+        .all()
+    )
+    group = [t for t in candidates if t.id == root_id or task_origin_id(t) == root_id]
+    return group or [root_task]
+
+
+def execution_out(db: Session, task: AgentTask, group: list[AgentTask] | None = None, name_cache: dict | None = None) -> dict[str, Any]:
+    """Serializa uma linha do Historico. Se 'group' for informado (varias tasks da mesma
+    inicializacao: raiz + reenvios de PDF), agrega arquivos/contagens/tempo do grupo inteiro
+    em UMA linha, identificada pela task RAIZ (a de menor id / sem origin_task_id)."""
+    tasks = group or [task]
+    root = min(tasks, key=lambda t: t.id)
+    payload = task_payload(root)
+    files = group_files(db, tasks) if len(tasks) > 1 else files_for_task(db, root, payload)
+    counts = file_status_counts(files)
+    automation_id = task_automation_id(root, payload)
+    workspace_id = task_workspace_id(root, payload)
+    user_id = task_user_id(root, payload)
+    result = task_result(root)
+
+    started_candidates = [t.started_at for t in tasks if t.started_at]
+    started = min(started_candidates) if started_candidates else root.started_at
+    finished_candidates = [finished_at(t) for t in tasks]
+    finished_candidates = [f for f in finished_candidates if f]
+    # Grupo so tem 'finished_at' quando TODAS as tasks do grupo ja terminaram (senao ainda
+    # esta em andamento -- ex.: monitoramento/reenvio ainda rodando).
+    group_finished = max(finished_candidates) if finished_candidates and len(finished_candidates) == len(tasks) else None
+    end_for_duration = group_finished or datetime.utcnow()
+    duration = max(int((end_for_duration - started).total_seconds()), 0) if started else None
+
+    status_key = group_status(tasks) if len(tasks) > 1 else (root.status or "pending")
+    attempts_total = sum(t.attempts or 0 for t in tasks)
+    error_messages = [t.error_message for t in tasks if t.error_message]
+
+    summary = {
+        "task_type": root.task_type,
+        "raw_status": status_key,
+        "attempts": attempts_total,
+        "max_attempts": root.max_attempts,
+        "files_total": counts["total"],
+        "files_success": counts["success"],
+        "files_errors": counts["errors"],
+        "files_pending": counts["pending"],
+        "result_status": result.get("status"),
+        "error_message": "; ".join(error_messages) if error_messages else root.error_message,
+        "grouped_task_ids": [t.id for t in tasks] if len(tasks) > 1 else None,
+    }
+    return {
+        "id": root.id,
+        "run_code": f"TASK-{root.id:05d}",
+        "task_type": root.task_type,
+        "automation_id": automation_id,
+        "automation_name": entity_name(Automation, db, automation_id, name_cache),
+        "workspace_id": workspace_id,
+        "workspace_name": entity_name(Workspace, db, workspace_id, name_cache) or payload.get("workspace_name"),
+        "triggered_by_user_id": user_id,
+        "triggered_by_user_name": entity_name(User, db, user_id, name_cache),
+        "started_at": sao_paulo_utc_iso(started),
+        "created_at": sao_paulo_utc_iso(root.created_at),
+        "finished_at": sao_paulo_utc_iso(group_finished),
+        "duration_seconds": duration,
+        "total_files": counts["total"],
+        "success_count": counts["success"],
+        "error_count": counts["errors"],
+        "status": STATUS_LABELS.get(status_key, status_key),
+        "raw_status": status_key,
+        "summary": summary,
+    }
+
+
+def get_started_task(db: Session, id: int) -> AgentTask:
+    task = db.query(AgentTask).filter(
+        AgentTask.id == id,
+        AgentTask.is_deleted == False,
+        AgentTask.started_at.isnot(None),
+    ).first()
+    if not task:
+        raise HTTPException(404, "Execution not found")
+    return task
+
+
+def group_tasks_by_origin(tasks: list[AgentTask]) -> dict[int, list[AgentTask]]:
+    """Agrupa tasks upload_files_to_workspace pela raiz da inicializacao (origin_task_id, ou
+    o proprio id quando ausente/legado). Cada grupo = 1 linha no Historico."""
+    groups: dict[int, list[AgentTask]] = {}
+    for task in tasks:
+        root_id = task_origin_id(task)
+        groups.setdefault(root_id, []).append(task)
+    return groups
+
+
+@router.get("")
+def list_executions(
+    automation_id: Optional[int] = None,
+    status: str = "",
+    started_from: str = "",
+    started_to: str = "",
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    # Filtros de status/data sao aplicados no nivel do GRUPO (apos agregacao), nao por task
+    # individual -- senao um reenvio de PDF fora da janela de data, ou com status diferente da
+    # raiz, poderia excluir/fragmentar a inicializacao. Por isso buscamos todas as tasks
+    # upload_files_to_workspace iniciadas primeiro, agrupamos, e so entao filtramos/paginamos.
+    all_tasks = (
+        db.query(AgentTask)
+        .filter(
+            AgentTask.is_deleted == False,
+            AgentTask.started_at.isnot(None),
+            AgentTask.task_type == "upload_files_to_workspace",
+        )
+        .order_by(AgentTask.started_at.desc(), AgentTask.id.desc())
+        .all()
+    )
+    groups = group_tasks_by_origin(all_tasks)
+
+    status_filter = normalize_status_filter(status)
+    start = parse_datetime(started_from)
+    end = parse_datetime(started_to)
+
+    safe_limit = min(max(int(limit or 100), 1), 1000)
+    rows: list[dict[str, Any]] = []
+    name_cache: dict = {}  # memoiza nomes de automacao/workspace/user entre as linhas da resposta
+    # Ordena grupos pela task mais recente (maior started_at) dentro do grupo, para manter a
+    # mesma ordenacao "mais recente primeiro" que a lista tinha antes do agrupamento.
+    ordered_roots = sorted(
+        groups.keys(),
+        key=lambda root_id: max((t.started_at for t in groups[root_id] if t.started_at), default=datetime.min),
+        reverse=True,
+    )
+    for root_id in ordered_roots:
+        group = groups[root_id]
+        root = min(group, key=lambda t: t.id)
+        payload = task_payload(root)
+        if automation_id is not None and task_automation_id(root, payload) != automation_id:
+            continue
+        group_started = min((t.started_at for t in group if t.started_at), default=root.started_at)
+        if start and (not group_started or group_started < start):
+            continue
+        if end and (not group_started or group_started > end):
+            continue
+        status_key = group_status(group) if len(group) > 1 else (root.status or "pending")
+        if status_filter and status_key != status_filter:
+            continue
+        rows.append(execution_out(db, root, group, name_cache))
+        if len(rows) >= safe_limit:
+            break
+    return rows
+
+
+@router.get("/{id}")
+def execution_detail(id: int, db: Session = Depends(get_db)):
+    task = get_started_task(db, id)
+    group = resolve_group_tasks(db, task)
+    root = min(group, key=lambda t: t.id)
+    return execution_out(db, root, group)
+
+
+@router.get("/{id}/timeline")
+def execution_timeline(id: int, db: Session = Depends(get_db)):
+    task = get_started_task(db, id)
+    group = resolve_group_tasks(db, task)
+    root = min(group, key=lambda t: t.id)
+    items: list[dict[str, Any]] = []
+    if root.started_at:
+        items.append({"timestamp": sao_paulo_utc_iso(root.started_at), "kind": "TASK", "log_type": "INFO", "message": "Task started"})
+    task_ids = [t.id for t in group]
+    logs = (
+        db.query(ExecutionLog)
+        .filter(ExecutionLog.task_id.in_(task_ids))
+        .order_by(ExecutionLog.created_at.asc(), ExecutionLog.id.asc())
+        .all()
+    )
+    for log in logs:
+        items.append(log_to_dict(log))
+    finished_candidates = [finished_at(t) for t in group]
+    finished_candidates = [f for f in finished_candidates if f]
+    if finished_candidates and len(finished_candidates) == len(group):
+        end = max(finished_candidates)
+        status_key = group_status(group) if len(group) > 1 else (root.status or "pending")
+        items.append({"timestamp": sao_paulo_utc_iso(end), "kind": "TASK", "log_type": "INFO", "message": f"Task finished: {STATUS_LABELS.get(status_key, status_key)}"})
+    return {"items": items}
+
+
+@router.get("/{id}/files")
+def execution_files(id: int, limit: int = 200, db: Session = Depends(get_db)):
+    task = get_started_task(db, id)
+    group = resolve_group_tasks(db, task)
+    files = group_files(db, group) if len(group) > 1 else files_for_task(db, group[0])
+    safe_limit = min(max(int(limit or 200), 1), 1000)
+    return files[:safe_limit]
+
+
+@router.get("/{id}/logs")
+def execution_logs(id: int, limit: int = 300, db: Session = Depends(get_db)):
+    task = get_started_task(db, id)
+    group = resolve_group_tasks(db, task)
+    task_ids = [t.id for t in group]
+    safe_limit = min(max(int(limit or 300), 1), 1000)
+    return [
+        log_to_dict(log)
+        for log in (
+            db.query(ExecutionLog)
+            .filter(ExecutionLog.task_id.in_(task_ids))
+            .order_by(ExecutionLog.created_at.desc(), ExecutionLog.id.desc())
+            .limit(safe_limit)
+            .all()
+        )
+    ]
+
+
+@router.get("/{id}/errors")
+def execution_errors(id: int, db: Session = Depends(get_db)):
+    task = get_started_task(db, id)
+    group = resolve_group_tasks(db, task)
+    task_ids = [t.id for t in group]
+    all_files = group_files(db, group) if len(group) > 1 else files_for_task(db, group[0])
+    files = [
+        file
+        for file in all_files
+        if normalize_text(file.get("status") or file.get("local_status")) in ERROR_FILE_STATUSES
+        or normalize_text(file.get("playground_status") or file.get("workspace_status")) in ERROR_PLAYGROUND_STATUSES
+        or file.get("last_error")
+        or file.get("error_message")
+    ]
+    logs = [
+        log_to_dict(log)
+        for log in (
+            db.query(ExecutionLog)
+            .filter(
+                ExecutionLog.task_id.in_(task_ids),
+                ExecutionLog.level.in_(["error", "warning", "ERROR", "WARNING"]),
+            )
+            .order_by(ExecutionLog.created_at.desc(), ExecutionLog.id.desc())
+            .all()
+        )
+    ]
+    return {"files": files, "logs": logs}
+
+
+@router.get("/{id}/summary")
+def execution_summary(id: int, db: Session = Depends(get_db)):
+    task = get_started_task(db, id)
+    group = resolve_group_tasks(db, task)
+    root = min(group, key=lambda t: t.id)
+    execution = execution_out(db, root, group)
+    return {
+        "execution_id": id,
+        "files": execution["total_files"],
+        "errors": execution["error_count"],
+        "status": execution["status"],
+        "summary": execution["summary"],
+    }
+
+
+@router.delete("/{id}")
+def delete_execution(id: int, db: Session = Depends(get_db)):
+    task = db.query(AgentTask).filter(AgentTask.id == id, AgentTask.is_deleted == False).first()
+    if not task:
+        raise HTTPException(404, detail="Execution not found")
+
+    # Apaga o GRUPO inteiro (raiz + reenvios de PDF da mesma inicializacao), consistente com
+    # a linha agregada exibida no Historico -- nunca deixa "metade" de uma inicializacao viva.
+    group = resolve_group_tasks(db, task)
+    now = datetime.utcnow()
+    group_ids = [t.id for t in group]
+
+    for group_task in group:
+        group_task.is_deleted = True
+        group_task.deleted_at = now
+
+        # 1. Apagar logicamente arquivos gerados por esta task do grupo
+        db.query(WorkspaceFile).filter(
+            WorkspaceFile.detection_task_id == group_task.id,
+            WorkspaceFile.is_deleted == False
+        ).update(
+            {WorkspaceFile.is_deleted: True, WorkspaceFile.deleted_at: now},
+            synchronize_session=False
+        )
+
+        # 3. Apagar logicamente relatórios gerados a partir desta task do grupo
+        from app.models.execution import ExecutionReport
+        db.query(ExecutionReport).filter(
+            ExecutionReport.source_task_id == group_task.id,
+            ExecutionReport.is_deleted == False
+        ).update(
+            {ExecutionReport.is_deleted: True, ExecutionReport.deleted_at: now},
+            synchronize_session=False
+        )
+
+    # 2. Apagar fisicamente os logs de TODAS as tasks do grupo (tabela execution_logs não possui is_deleted)
+    db.query(ExecutionLog).filter(ExecutionLog.task_id.in_(group_ids)).delete(synchronize_session=False)
+
+    db.commit()
+
+    from app.services.audit import create_log
+    create_log(
+        db,
+        "warning",
+        f"Execution marked as deleted: {task.id} (grouped tasks {group_ids}; related files, logs and reports cleared)",
+        "agent_task",
+        task.id,
+    )
+    return {"status": "deleted"}

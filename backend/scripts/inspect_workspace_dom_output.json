@@ -1,0 +1,262 @@
+{
+  "tables": [
+    {
+      "tableIndex": 0,
+      "theadPresent": true,
+      "headerCount": 5,
+      "headers": [
+        {
+          "text": "Name",
+          "ariaLabel": "",
+          "title": "",
+          "dataFocusId": "header-name",
+          "class": "awsui_header-cell_1spae_wii4_149 awsui_is-visual-refresh_1spae_wii4_216",
+          "scope": "col",
+          "isBodyRowTh": false
+        },
+        {
+          "text": "Status",
+          "ariaLabel": "",
+          "title": "",
+          "dataFocusId": "header-status",
+          "class": "awsui_header-cell_1spae_wii4_149 awsui_is-visual-refresh_1spae_wii4_216",
+          "scope": "col",
+          "isBodyRowTh": false
+        },
+        {
+          "text": "Upload date",
+          "ariaLabel": "",
+          "title": "",
+          "dataFocusId": "header-createdAt",
+          "class": "awsui_header-cell_1spae_wii4_149 awsui_is-visual-refresh_1spae_wii4_216",
+          "scope": "col",
+          "isBodyRowTh": false
+        },
+        {
+          "text": "Size",
+          "ariaLabel": "",
+          "title": "",
+          "dataFocusId": "header-size",
+          "class": "awsui_header-cell_1spae_wii4_149 awsui_is-visual-refresh_1spae_wii4_216",
+          "scope": "col",
+          "isBodyRowTh": false
+        },
+        {
+          "text": "Actions",
+          "ariaLabel": "",
+          "title": "",
+          "dataFocusId": "header-actions",
+          "class": "awsui_header-cell_1spae_wii4_149 awsui_is-visual-refresh_1spae_wii4_216",
+          "scope": "col",
+          "isBodyRowTh": false
+        }
+      ],
+      "tbodyRowCount": 2,
+      "tbodyRowsDumped": 2,
+      "tbodyRows": [
+        {
+          "index": 0,
+          "rowAttrs": {
+            "ariaRowIndex": "2",
+            "dataSelectionItem": "item",
+            "id": "",
+            "class": "awsui_row_wih1l_1xndw_359",
+            "dataAttrs": {
+              "data-selection-item": "item"
+            }
+          },
+          "cells": [
+            {
+              "cellIndex": 0,
+              "tag": "TH",
+              "scope": "row",
+              "isNameCell": true,
+              "innerText": "CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 1,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "Ready",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 2,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "16/06/2026, 18:18",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 3,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "24 KB",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 4,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {
+                "title": "Delete \"CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx\"",
+                "aria-label": "Delete \"CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx\""
+              },
+              "buttons": [
+                {
+                  "ariaLabel": "Delete \"CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx\"",
+                  "title": "Delete \"CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx\"",
+                  "innerText": "",
+                  "disabled": false,
+                  "class": "awsui_button_vjswe_1xvr8_157 awsui_variant-inline-link_vjswe_1xvr8_380"
+                }
+              ]
+            }
+          ],
+          "nameCellText": "CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx",
+          "nameCellEllipsis": false,
+          "statusCellText": "Ready",
+          "deleteButtonAriaLabel": "Delete \"CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx\""
+        },
+        {
+          "index": 1,
+          "rowAttrs": {
+            "ariaRowIndex": "3",
+            "dataSelectionItem": "item",
+            "id": "",
+            "class": "awsui_row_wih1l_1xndw_359",
+            "dataAttrs": {
+              "data-selection-item": "item"
+            }
+          },
+          "cells": [
+            {
+              "cellIndex": 0,
+              "tag": "TH",
+              "scope": "row",
+              "isNameCell": true,
+              "innerText": "Exercicio 3.docx",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 1,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "Ready",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 2,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "16/06/2026, 18:18",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 3,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "36 KB",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {},
+              "buttons": []
+            },
+            {
+              "cellIndex": 4,
+              "tag": "TD",
+              "scope": "",
+              "isNameCell": false,
+              "innerText": "",
+              "ariaLabel": "",
+              "title": "",
+              "isEllipsisTruncated": false,
+              "fullNameAttrsFromChildren": {
+                "title": "Delete \"Exercicio 3.docx\"",
+                "aria-label": "Delete \"Exercicio 3.docx\""
+              },
+              "buttons": [
+                {
+                  "ariaLabel": "Delete \"Exercicio 3.docx\"",
+                  "title": "Delete \"Exercicio 3.docx\"",
+                  "innerText": "",
+                  "disabled": false,
+                  "class": "awsui_button_vjswe_1xvr8_157 awsui_variant-inline-link_vjswe_1xvr8_380"
+                }
+              ]
+            }
+          ],
+          "nameCellText": "Exercicio 3.docx",
+          "nameCellEllipsis": false,
+          "statusCellText": "Ready",
+          "deleteButtonAriaLabel": "Delete \"Exercicio 3.docx\""
+        }
+      ],
+      "hasLeadingCheckboxColumn": false
+    }
+  ],
+  "role_rows_outside_table": [],
+  "pagination": [
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "ariaLabel": "",
+      "disabled": true,
+      "class": "awsui_arrow_fvjdu_1toqn_219 awsui_button_fvjdu_1toqn_185 awsui_button-disabled_fvjdu_1toqn_214"
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "ariaLabel": "",
+      "disabled": false,
+      "class": "awsui_arrow_fvjdu_1toqn_219 awsui_button_fvjdu_1toqn_185"
+    }
+  ],
+  "page_size_selector": null,
+  "notes": [
+    {
+      "note": "Table 0: header selector 'tr:first-child th' picks up body-row <th scope=\"row\"> cells. Spurious headers: [{\"text\":\"CONTRATO DE COMPRA E VENDA DE VEÍCULO ALIENADO.docx\",\"scope\":\"row\",\"inThead\":false}]"
+    }
+  ]
+}
