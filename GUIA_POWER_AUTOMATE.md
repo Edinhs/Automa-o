@@ -1,11 +1,19 @@
 # Guia Power Automate — Automation HUB no Teams (unificado)
 
+| | |
+|---|---|
+| **Versão** | 2.0 |
+| **Data de revisão** | 03/07/2026 |
+| **Área dona / responsável** | Infotainment — Automation HUB |
+| **Classificação** | Interno — Stellantis |
+| **Próxima revisão** | 03/01/2027 (ou a cada mudança de fluxo) |
+
 > **Guia único.** Reúne, num só lugar e **do zero**, todos os fluxos do Power Automate do Automation HUB. Substitui os antigos `POWER_AUTOMATE.md`, `GUIA_FLUXO_POWER_AUTOMATE.md`, `GUIA_TEAMS_CARD_POWER_AUTOMATE.md` e `GUIA_TEAMS_SOLICITACAO_ACESSO.md`.
 >
 > **Power Automate em inglês:** os nomes de ações aparecem **em inglês** (como na sua tela) e as explicações em português. Os termos em inglês entre parênteses ajudam a localizar.
 
 O que dá para montar (cada parte é independente):
-1. **Parte I — Relatório no Teams:** quando o HUB gera um relatório, o fluxo posta **1 card** no grupo: uma **imagem (PNG) fiel do relatório** (KPIs, SPECs, Highlights + gráfico, convite ao **Stellantis GenAI Playground**) + os botões **Abrir Playground / Solicitar Acesso / Baixar Relatório (PDF)** (Apêndice H).
+1. **Parte I — Convite no Teams:** quando o HUB gera o relatório semanal, o fluxo posta **1 card** no grupo: uma **imagem (PNG) de CONVITE** — a manchete "seu ambiente já está pronto, entre e crie seu agente", o **tempo devolvido ao time** (semana + acumulado), a **adoção** (engenheiros usando / SPECs prontas) e a **saúde em 1 linha** — com os botões **Abrir Playground / Solicitar Acesso / Baixar Relatório (PDF)** (Apêndice H). O card **não** traz contagem de arquivos, tabela SPEC-por-SPEC nem status cru de workspace: esse detalhe vive no PDF ("Baixar Relatório").
 2. **Parte II — Convite "Solicitar acesso" (legado/fallback):** versão antiga, de quando o botão de acesso ia numa mensagem separada *depois* do card. Hoje o botão já mora dentro do card (Apêndice H) — mantida só como referência.
 3. **Parte III — Formulário de Solicitação de Acesso:** self-service (Adaptive Card → **Lista do SharePoint** + aviso ao aprovador), sem mensagem manual.
 4. **Parte IV — Alternativas:** entrega por **e-mail**, por **canal do Teams**, ou o **botão manual** do dashboard (sem Power Automate).
@@ -13,7 +21,7 @@ O que dá para montar (cada parte é independente):
 ```
 Parte I:   HUB gera relatório ─▶ pasta OneDrive (relatório + .pdf + .png + .meta.json) ─▶ Power Automate
               1) share link do PDF + share link (direto) da imagem
-              2) posta 1 card = imagem do relatório + 3 botões (Playground / Acesso / PDF)
+              2) posta 1 card = imagem-CONVITE + 3 botões (Playground / Acesso / PDF)
 Parte II:  (legado) mensagem separada de "Solicitar acesso" pós-card — não é mais necessária
 Parte III: colaborador roda o fluxo ─▶ Adaptive Card (form) ─▶ Lista do SharePoint + aviso ao aprovador
 ```
@@ -36,17 +44,20 @@ Parte III: colaborador roda o fluxo ─▶ Adaptive Card (form) ─▶ Lista do 
 - **Expression / Expressão:** uma "fórmula" (ex.: `body('Parse_JSON')?['attachment_file']`). Vai na aba **Expression** (fx) do seletor de conteúdo.
 - **`.meta.json` (sidecar):** o arquivo de "instruções" que dispara e alimenta o fluxo da Parte I — já vem com o **card pronto** e os nomes dos outros arquivos.
 - **Adaptive Card:** o formato do "card" visual do Teams. Na Parte I o HUB entrega o card **pronto**; na Parte III o card é um **formulário** (`Input.Text` + `Action.Submit`).
+- **SPEC:** a especificação técnica de um projeto/veículo (o conjunto de documentos daquele escopo). No HUB, cada SPEC corresponde a **um workspace** no Playground onde o agente atua.
 - **`responder`:** saída da ação de formulário (Parte III) que diz **quem** clicou em Enviar (nome + e-mail) — é como sabemos o solicitante sem pedir login.
 - **Run-only:** modo de compartilhar um fluxo para que outras pessoas só possam **executá-lo** (não editar).
 
 ---
 
-# Parte I — Fluxo de Relatório no Teams (card)
+# Parte I — Fluxo do Convite no Teams (card)
 
-**Resultado:** toda vez que o HUB **gera um relatório**, o fluxo posta, no mesmo grupo, **1 card**: uma **imagem (PNG) fiel do relatório** (KPIs, SPECs, Highlights + gráfico, convite ao Stellantis GenAI Playground) com os botões **Abrir Playground**, **Solicitar Acesso** e **Baixar Relatório (PDF)**.
+**Resultado:** toda vez que o HUB **gera o relatório semanal**, o fluxo posta, no mesmo grupo, **1 card de CONVITE**: uma **imagem (PNG)** com a manchete "seu ambiente já está pronto — entre e crie seu agente", o **tempo devolvido ao time** (semana + acumulado), a **adoção** (engenheiros usando / SPECs prontas) e a **saúde em 1 linha** — com os botões **Abrir Playground**, **Solicitar Acesso** e **Baixar Relatório (PDF)**.
+
+> **Por que convite, e não status?** O objetivo nº 1 é fazer o engenheiro **entrar e usar** a ferramenta. O gancho é devolver tempo: ele não precisa mais baixar a SPEC, subir no workspace seguro e montar o ambiente — isso já está pronto. Por isso a manchete convida (não "veja o status") e as horas economizadas entram logo abaixo como **prova de valor** (para liderança que lê o mesmo grupo). Contagem de arquivos, tabela SPEC-por-SPEC e status cru de workspace **saíram** do card — ficam no PDF.
 
 ### Como funciona (em 1 parágrafo)
-Quando o HUB gera um relatório, ele grava numa pasta sincronizada com o OneDrive: (1) o relatório no formato escolhido, (2) um **PDF** (para baixar), (3) um **PNG** (a imagem fiel do relatório) e (4) um **`.meta.json`** (o sidecar) — que já vem com o **card pronto** e os nomes dos outros arquivos. O fluxo "acorda" quando o `.meta.json` aparece, lê as instruções, gera **links de download** (PDF + imagem direta), encaixa os dois no card e **posta o card** no chat de grupo.
+Quando o HUB gera o relatório semanal, ele grava numa pasta sincronizada com o OneDrive: (1) o relatório no formato escolhido, (2) um **PDF** (para baixar), (3) um **PNG** (a imagem-convite) e (4) um **`.meta.json`** (o sidecar) — que já vem com o **card pronto** e os nomes dos outros arquivos. O fluxo "acorda" quando o `.meta.json` aparece, lê as instruções, gera **links de download** (PDF + imagem direta), encaixa os dois no card e **posta o card** no chat de grupo.
 
 ## I.0 — Preparação (fazer uma vez)
 
@@ -106,7 +117,7 @@ A partir daqui você tem conteúdos dinâmicos como **attachment_file**, **adapt
 
 ## I.4 — Gerar os links de download (PDF + imagem) (4 ações)
 
-O card semanal é **uma imagem (PNG) fiel do relatório + botões**. Por isso o fluxo precisa de **dois**
+O card semanal é **uma imagem (PNG) de convite + botões**. Por isso o fluxo precisa de **dois**
 links de compartilhamento: o do **PDF** (botão "Baixar Relatório (PDF)") e o da **imagem** (que aparece
 no corpo do card). Renomeie as ações como abaixo para não confundir os dois "Create share link".
 
@@ -120,7 +131,8 @@ no corpo do card). Renomeie as ações como abaixo para não confundir os dois "
 
 ### I.4.2 Criar o link do PDF
 1. **Add an action** → **OneDrive for Business** → **"Create share link"** → renomeie para **`Link_PDF`**.
-2. **File:** **Id** (saída de `Meta_PDF`). · **Link type:** **View**. · **Link scope:** **Organization** (ou **Anyone**).
+2. **File:** **Id** (saída de `Meta_PDF`). · **Link type:** **View**. · **Link scope:** **Organization** (padrão corporativo).
+   > 🔒 **Use `Organization`, não `Anyone`.** O PDF é o relatório completo (dado interno). Link "Anyone" é **anônimo** e costuma ser bloqueado pela política de DLP da Stellantis — só use "Anyone" como **exceção aprovada pela Segurança da Informação**.
 
 ### I.4.3 Achar a imagem (PNG) pelo nome
 1. **Add an action** → **OneDrive for Business** → **"Get file metadata using path"** → renomeie para **`Meta_Imagem`**.
@@ -131,12 +143,13 @@ no corpo do card). Renomeie as ações como abaixo para não confundir os dois "
 
 ### I.4.4 Criar o link da imagem (precisa ser DIRETO)
 1. **Add an action** → **OneDrive for Business** → **"Create share link"** → renomeie para **`Link_Imagem`**.
-2. **File:** **Id** (saída de `Meta_Imagem`). · **Link type:** **View**. · **Link scope:** **Anyone** (recomendado p/ a imagem renderizar) **ou Organization**.
+2. **File:** **Id** (saída de `Meta_Imagem`). · **Link type:** **View**. · **Link scope:** **Organization** (padrão corporativo).
 
-> ⚠️ **A imagem precisa de uma URL que devolva os BYTES do PNG** — o Teams **não** renderiza uma página
-> de visualização do OneDrive/SharePoint. Por isso a I.5 acrescenta **`&download=1`** ao `webUrl`. Se a
-> política da empresa bloquear links "Anyone", teste com **Organization**; se mesmo assim a imagem não
-> aparecer no Teams, use o **fallback** (card compacto — ver I.9).
+> 🔒 **Padrão `Organization` — evite `Anyone`.** A imagem-convite é conteúdo interno; um link anônimo é
+> vetor de vazamento e normalmente barrado pelo DLP. **Se** a imagem não renderizar no Teams com
+> `Organization` (o Flow bot precisa dos BYTES do PNG, não de uma página de visualização — por isso a I.5
+> acrescenta **`&download=1`**), a saída corporativamente correta é o **fallback do PDF** (I.9), **não**
+> abrir o link como "Anyone". Só use "Anyone" com **aprovação da Segurança da Informação**.
 
 ## I.5 — Encaixar os links no card (1 passo)
 O card vem com **dois placeholders**: `https://hub-report-download.invalid` (botão do PDF) e
@@ -157,7 +170,7 @@ O card vem com **dois placeholders**: `https://hub-report-download.invalid` (bot
 ## I.6 — (removido) Mensagem de boas-vindas
 > **Não é mais necessária.** O convite ao Playground agora faz parte do **próprio card-imagem** — o
 > poster já traz a saudação "👋 Olá, time Stellantis!" e o painel do **GenAI Playground**. O fluxo posta
-> **um único card**: a imagem do relatório + os botões. **Pule direto para a I.7.**
+> **um único card**: a imagem-convite + os botões. **Pule direto para a I.7.**
 
 ## I.7 — Postar o card no chat de grupo
 1. **Add an action** → **Microsoft Teams** → **"Post card in a chat or channel"**.
@@ -171,31 +184,39 @@ O card vem com **dois placeholders**: `https://hub-report-download.invalid` (bot
 1. No HUB: **Relatórios** → gere um relatório.
 2. Aguarde o OneDrive sincronizar os arquivos (relatório + **`.pdf`** + **`.png`** + `.meta.json`).
 3. Power Automate → **Run history**: uma execução **Succeeded** (verde). *(Execuções "Skipped" no ramo If no são normais.)*
-4. No grupo do Teams: chega **um card** com a **imagem do relatório** (KPIs, SPECs, Highlights + gráfico) e os **3 botões** — **Abrir Playground** · **Solicitar Acesso** · **Baixar Relatório (PDF)**. Clique no PDF → abre.
+4. No grupo do Teams: chega **um card** com a **imagem-convite** (manchete "entre e crie seu agente", tempo devolvido + gráfico, adoção, saúde) e os **3 botões** — **Abrir Playground** · **Solicitar Acesso** · **Baixar Relatório (PDF)**. Clique no PDF → abre.
    > **Imagem não aparece?** É o único ponto sensível a tenant: revise o link direto da imagem (I.4.4/I.5, `&download=1`) ou use o **fallback** abaixo.
 
 ## I.9 — Configuração do card no HUB (`backend\.env`)
-O relatório semanal vira **1 post**: um card com a **imagem (PNG) fiel do relatório** + botões. O HUB
-gera o PNG com o **Chromium offline** (o mesmo do RPA) e grava, na pasta de entrega, o relatório + o
-**`.pdf`** companheiro + o **`.png`** + o `.meta.json`. O JSON do card está no **Apêndice H**: um `Image`
-(a foto do relatório) + os botões **Abrir Playground** · **Solicitar Acesso** · **Baixar Relatório (PDF)**.
+O relatório semanal vira **1 post**: um card-**convite** (imagem PNG) + botões. O HUB gera o PNG com o
+**Chromium offline** (o mesmo do RPA) e grava, na pasta de entrega, o relatório + o **`.pdf`** companheiro
++ o **`.png`** + o `.meta.json`. O JSON do card está no **Apêndice H**: um `Image` (o poster-convite) +
+os botões **Abrir Playground** · **Solicitar Acesso** · **Baixar Relatório (PDF)**.
 
 > **Importante:** o card do `.meta.json` já vem **pronto**. O Power Automate só substitui **dois
 > placeholders**: `https://hub-report-download.invalid` (link do PDF) e `https://hub-report-image.invalid`
 > (link **direto** da imagem) — ambos na I.5. Todo o resto do card e o próprio PNG já chegam prontos.
 
 > **⚠️ Fallback (se a imagem não renderizar no seu tenant):** se a política bloquear links diretos de
-> imagem, o HUB continua entregando o **PDF completo** (mesmo visual) no botão "Baixar Relatório (PDF)".
-> Quando o HUB **não** consegue gerar o PNG (sem Chromium), o `.meta.json` volta a trazer o **card-texto**
-> de adoção (convite + horas + adoção + saúde), sem `image_file` — o fluxo funciona igual, sem imagem.
+> imagem, o HUB continua entregando o **PDF completo** no botão "Baixar Relatório (PDF)". Quando o HUB
+> **não** consegue gerar o PNG (sem Chromium), o `.meta.json` traz o **card-texto de convite equivalente**
+> (mesma ordem: convite → tempo devolvido → adoção → saúde), sem `image_file` — o fluxo funciona igual.
 
 Ajustes no `backend\.env` (depois: `restart_services.bat` + **gere um relatório novo**):
-- **Logo** (URL HTTPS pública; vazio = sem logo): `REPORT_CARD_LOGO_URL=https://.../sua-logo.png` *(no PNG offline a logo remota pode não carregar — o poster usa a marca em texto).*
+- **Marca:** o poster desenha o **wordmark "STELLANTIS" localmente** (fidelidade de marca garantida, sem dependência de rede). `REPORT_CARD_LOGO_URL=` (opcional) só é usado no **cabeçalho do card-texto** (fallback); no PNG offline uma logo remota pode não carregar, por isso a marca do poster é sempre local.
 - **Horas economizadas** — minutos de setup poupados por arquivo enviado: `REPORT_MINUTES_PER_FILE=4`
 - **Botão "Abrir Playground"** — link do Playground (vazio = usa `PLAYGROUND_URL`): `REPORT_CARD_PLAYGROUND_URL=https://genai.stellantis.com/`
 - **Botão "Solicitar Acesso"** — link da app Workflows / fluxo da Parte III (vazio = sem botão): `REPORT_CARD_ACCESS_URL=https://teams.microsoft.com/l/app/<appId-da-Workflows>`
 
-O que o HUB calcula e desenha no PNG (via `compute_card_image_data`): **arquivos processados** (total + Δ semana), **horas economizadas** (total + Δ), **workspaces disponíveis**, **SPECs** (top 5: nome, descrição, última atualização, nº de arquivos), **Highlights** (arquivos atualizados na semana, horas, **gráfico** cumulativo de 7 dias) e o painel institucional do Playground.
+O que o HUB calcula e desenha no PNG (via `compute_card_image_data`), na ordem do convite:
+1. **Convite (manchete):** "seu ambiente já está pronto — entre e crie seu agente" + corpo + linha "como pedir acesso".
+2. **Tempo devolvido ao time:** horas economizadas **desta semana** + **acumulado** (arquivos preparados × `REPORT_MINUTES_PER_FILE`) + **gráfico** cumulativo de horas dos últimos 7 dias.
+3. **Adoção:** **engenheiros já usando** (network_ids com acesso concedido) + **SPECs prontas no ambiente**.
+4. **Saúde em 1 linha:** nº de itens em tratamento + **previsão de correção** (constante `CARD_HEALTH_ETA` em `routers/reports.py`, padrão "em até 1 dia útil"); ou "tudo certo" quando não há itens.
+
+> **Ficou de fora do card (de propósito):** contagem de arquivos, tabela SPEC-por-SPEC e status cru de
+> workspace — isso é "o quanto a máquina trabalhou", não o que o leitor ganha. Quem quiser o detalhe abre
+> o **PDF** ("Baixar Relatório").
 
 ---
 
@@ -259,6 +280,13 @@ Um **fluxo instantâneo** é compartilhado com a equipe. Quando um colaborador o
 
 > A coluna **Created** (automática) já registra **quando** a solicitação chegou. Anote o **endereço do site** e o **nome da lista** (usados na III.4).
 
+> 🔐 **Privacidade / LGPD (obrigatório).** Esta lista guarda **dados pessoais** (nome, e-mail, ID de rede,
+> justificativa). Portanto:
+> - **Finalidade única:** controlar pedidos de acesso a workspace. Não use os dados para outro fim.
+> - **Acesso restrito:** dê permissão de leitura **apenas ao grupo de aprovadores** (SharePoint → **Configurações da lista → Permissões**); não deixe a lista aberta ao site inteiro.
+> - **Retenção:** defina um expurgo periódico (ex.: apagar solicitações **resolvidas há mais de 6 meses**) — pode ser um fluxo agendado do Power Automate.
+> - **Classificação:** marque a lista/site como **Interno – Stellantis**. Em caso de dúvida, valide com **Privacidade/Compliance** antes de publicar para toda a equipe.
+
 ## III.2 — Criar o fluxo e o gatilho
 1. **make.powerautomate.com** → **Create** → **Instant cloud flow**.
 2. **Flow name:** `Solicitar acesso - Teams`.
@@ -300,7 +328,7 @@ Um **fluxo instantâneo** é compartilhado com a equipe. Quando um colaborador o
 
 ## III.5 — Notificar o aprovador
 1. **+ New step** → **Microsoft Teams** → **"Post message in a chat or channel"**.
-2. **Post as:** **Flow bot** · **Post in:** **Chat with Flow bot** · **Recipient:** e-mail do aprovador (ex.: `TA25413@stellantis.com`).
+2. **Post as:** **Flow bot** · **Post in:** **Chat with Flow bot** · **Recipient:** e-mail do aprovador (ex.: `AB12345@stellantis.com` — troque pelo e-mail real do responsável).
 3. **Message:** visão de **código/HTML** (`</>`) → cole o modelo do **Apêndice C**.
 4. **Save**.
 
@@ -309,6 +337,11 @@ Um **fluxo instantâneo** é compartilhado com a equipe. Quando um colaborador o
 ## III.6 — Disponibilizar o "botão" para a equipe
 1. No Power Automate, abra o fluxo → **Share** → em **Run only users**, adicione as pessoas ou um **grupo do Microsoft 365**.
    > Em **Connections**, mantenha as conexões **do dono** para simplicidade (o card sai sempre pelo mesmo Flow bot/canal).
+
+> 🏢 **Governança (evite dependência de 1 pessoa).** Como as conexões são "do dono", se a conta dona sair
+> da empresa ou trocar a senha, **o fluxo quebra para todos**. Recomendação corporativa: usar uma **conta
+> de serviço** (mailbox funcional) como **dona** dos fluxos das Partes I e III e adicionar **co-owners**
+> (Share → *Owners*). Assim o fluxo sobrevive a trocas de time. Vale para **os dois** fluxos deste guia.
 2. **Como o colaborador executa (o "botão"):**
    - **No Teams:** app **Workflows** → lista de fluxos → **`Solicitar acesso - Teams`** → **Run**.
    - **Ou** em **make.powerautomate.com** → **My flows** → **Shared with me** → **Run**.
@@ -354,7 +387,7 @@ Como o gatilho já é o `.meta.json` e você já fez o Parse JSON, use os campos
 | **(I) Parse JSON: "content deve ser do tipo JSON" (octet-stream)** | No **Content** use `base64ToString(triggerBody()?['$content'])`, não o chip "File content". |
 | **(I) Card Final: "replace espera string, valor é Null"** | Use `body('Link_PDF')?['webUrl']` / `body('Link_Imagem')?['webUrl']` (no topo), não `['link']['webUrl']`. |
 | **(I) Botão abre `hub-report-download.invalid`** | O `replace` não substituiu: confira os nomes das ações (`Link_PDF`/`Link_Imagem`) e se o **webUrl** não está vazio (teste a I.4.2/I.4.4 sozinhas). |
-| **(I) A imagem do card não aparece (quadro quebrado)** | O `Image.url` precisa devolver os **bytes** do PNG: revise `Link_Imagem` + o **`&download=1`** (I.5) e o **Link scope** (Anyone/Organization). Persistindo, use o fallback (I.9). |
+| **(I) A imagem do card não aparece (quadro quebrado)** | O `Image.url` precisa devolver os **bytes** do PNG: revise `Link_Imagem` + o **`&download=1`** (I.5) e o **Link scope** (**Organization** — padrão). Persistindo, use o **fallback do PDF** (I.9) em vez de abrir link "Anyone". |
 | **(I) "Get file metadata using path" falha (404)** | O **File path** é relativo à raiz do OneDrive (começa em `/`), sem "OneDrive - Stellantis". Confira a pasta e o `attachment_file`. |
 | **(I/III) O grupo não aparece em "Group chat"** | Mande uma mensagem qualquer no grupo pelo Teams e reabra a lista; ou use o **Group chat id**. |
 | **(III) `InvalidJsonInBotAdaptiveCard` / "Unexpected character… value: j"** | O campo **Adaptive Card** começou com a palavra `json` (ou crases) coladas. Cole **só** o conteúdo entre `{` e `}` (1º caractere = `{`). |
@@ -382,7 +415,7 @@ Cole no campo **Adaptive Card** da ação **"Post adaptive card and wait for a r
   "body": [
     { "type": "TextBlock", "text": "Solicitação de acesso a workspace", "weight": "Bolder", "size": "Large", "wrap": true },
     { "type": "TextBlock", "text": "Preencha os campos abaixo. Seu nome e e-mail são capturados automaticamente.", "isSubtle": true, "wrap": true, "spacing": "None" },
-    { "type": "Input.Text", "id": "idrede", "label": "ID de rede", "placeholder": "Ex.: TA25413", "isRequired": true, "errorMessage": "Informe o seu ID de rede." },
+    { "type": "Input.Text", "id": "idrede", "label": "ID de rede", "placeholder": "Ex.: AB12345", "isRequired": true, "errorMessage": "Informe o seu ID de rede." },
     { "type": "Input.Text", "id": "spec", "label": "SPEC / Workspace desejado", "placeholder": "Nome da SPEC ou do workspace", "isRequired": true, "errorMessage": "Informe a SPEC ou o workspace." },
     { "type": "Input.Text", "id": "justificativa", "label": "Justificativa (opcional)", "placeholder": "Por que você precisa do acesso?", "isMultiline": true }
   ],
@@ -464,13 +497,13 @@ https://teams.microsoft.com/l/chat/0/0?users=@{body('Formulario')?['responder']?
   "image_file": "relatorio_simplificado_20260624_143022.png",
   "image_url_placeholder": "https://hub-report-image.invalid",
   "card": { "title": "...", "period": "...", "generated_at": "...", "kind": "adoption" },
-  "adaptive_card": { "type": "AdaptiveCard", "version": "1.4", "body": ["... Image (foto do relatório) ..."] },
+  "adaptive_card": { "type": "AdaptiveCard", "version": "1.4", "body": ["... Image (poster-convite) ..."] },
   "teams_channel": "Relatorios",
   "email_to": "fulano@stellantis.com",
   "subject": "Relatório Simplificado"
 }
 ```
-> `attachment_file` = o **PDF** a anexar; `image_file` = o **PNG** fiel do relatório (o card carrega esta imagem); `adaptive_card` = card **pronto** para postar verbatim; `download_url_placeholder`/`image_url_placeholder` = as URLs que o `replace` aninhado (I.5) troca pelos links reais. `image_file`/`image_url_placeholder` **só aparecem quando o HUB gerou o PNG** — sem eles, o `adaptive_card` volta a ser o card-texto de adoção (fallback). `teams_channel`/`email_to`/`subject` só aparecem quando enviado pelo endpoint `deliver-folder` com routing.
+> `attachment_file` = o **PDF** a anexar; `image_file` = o **PNG** do convite (o card carrega esta imagem); `adaptive_card` = card **pronto** para postar verbatim; `download_url_placeholder`/`image_url_placeholder` = as URLs que o `replace` aninhado (I.5) troca pelos links reais. `image_file`/`image_url_placeholder` **só aparecem quando o HUB gerou o PNG** — sem eles, o `adaptive_card` volta a ser o **card-texto de convite equivalente** (fallback). `teams_channel`/`email_to`/`subject` só aparecem quando enviado pelo endpoint `deliver-folder` com routing.
 
 ## Apêndice F — Esquema da Lista do SharePoint (Parte III)
 | Coluna | Tipo | Origem no fluxo |
@@ -484,7 +517,7 @@ https://teams.microsoft.com/l/chat/0/0?users=@{body('Formulario')?['responder']?
 | **Created** | Date (automática) | data/hora do envio |
 
 ## Apêndice G — Diagramas (visão de cima)
-**Parte I — Relatório no Teams:**
+**Parte I — Convite no Teams:**
 ```
 [Trigger] When a file is created (OneDrive, pasta de entrega)
    └─ [Condition] expr x-ms-file-name  contains  "meta"
@@ -496,7 +529,7 @@ https://teams.microsoft.com/l/chat/0/0?users=@{body('Formulario')?['responder']?
              5) Link_Imagem: Create share link  (File = Id)  → webUrl (+ &download=1)
              6) Compose "Card final" (replace aninhado: placeholder PDF + placeholder imagem)
              7) Post card in a chat or channel  (Flow bot, Group chat, Card = Outputs do "Card final" — I.7)
-                 → 1 card = imagem do relatório + 3 botões (Playground/Acesso/PDF) (Apêndice H)
+                 → 1 card = imagem-convite + 3 botões (Playground/Acesso/PDF) (Apêndice H)
 ```
 **Parte III — Formulário de Acesso:**
 ```
@@ -509,7 +542,7 @@ https://teams.microsoft.com/l/chat/0/0?users=@{body('Formulario')?['responder']?
 
 ## Apêndice H — JSON do Adaptive Card de Dados do Relatório Semanal (Parte I)
 
-O card do relatório semanal é **uma imagem (PNG) fiel do relatório + botões**. Diferente do Apêndice A (colado estático), este card já chega **pronto** no `.meta.json` (campo `adaptive_card`) — você **não** cola nada no Power Automate. Todo o conteúdo visual (KPIs, SPECs, Highlights, gráfico, painel do Playground) está **dentro da imagem**, desenhada pelo HUB via **HTML+SVG → PNG** com o **Chromium offline** (`backend/app/services/report_image.py`). O Power Automate só troca **dois placeholders** (na I.5): `https://hub-report-download.invalid` (link do PDF) e `https://hub-report-image.invalid` (link **direto** da imagem).
+O card do relatório semanal é **uma imagem (PNG) de CONVITE + botões**. Diferente do Apêndice A (colado estático), este card já chega **pronto** no `.meta.json` (campo `adaptive_card`) — você **não** cola nada no Power Automate. Todo o conteúdo visual (manchete-convite, tempo devolvido + gráfico, adoção, saúde em 1 linha) está **dentro da imagem**, desenhada pelo HUB via **HTML+SVG → PNG** com o **Chromium offline** (`backend/app/services/report_image.py`). O Power Automate só troca **dois placeholders** (na I.5): `https://hub-report-download.invalid` (link do PDF) e `https://hub-report-image.invalid` (link **direto** da imagem).
 
 O JSON abaixo é só **referência** (o que o HUB gera):
 
@@ -535,7 +568,7 @@ O JSON abaixo é só **referência** (o que o HUB gera):
 }
 ```
 
-> **De onde vêm os valores:** o `Image.url` (`https://hub-report-image.invalid`) é trocado pelo **link direto da imagem** (I.4.4/I.5, com `&download=1`); **Abrir Playground** usa `REPORT_CARD_PLAYGROUND_URL` (ou `PLAYGROUND_URL`); **Solicitar Acesso** usa `REPORT_CARD_ACCESS_URL` (o botão some quando vazio); **Baixar Relatório (PDF)** é o placeholder do PDF trocado na I.5. Todo o conteúdo (KPIs, SPECs, Highlights, gráfico) está **na imagem** — nada é montado com elementos do Teams.
+> **De onde vêm os valores:** o `Image.url` (`https://hub-report-image.invalid`) é trocado pelo **link direto da imagem** (I.4.4/I.5, com `&download=1`); **Abrir Playground** usa `REPORT_CARD_PLAYGROUND_URL` (ou `PLAYGROUND_URL`); **Solicitar Acesso** usa `REPORT_CARD_ACCESS_URL` (o botão some quando vazio); **Baixar Relatório (PDF)** é o placeholder do PDF trocado na I.5. Todo o conteúdo (convite, tempo devolvido, adoção, saúde) está **na imagem** — nada é montado com elementos do Teams.
 
 > **⚠️ A imagem só renderiza se o `Image.url` devolver os bytes do PNG** (não uma página de visualização do OneDrive/SharePoint) — ver I.4.4/I.5. Quando o HUB **não** gera o PNG (sem Chromium), o `.meta.json` volta a trazer o **card-texto** de adoção (convite + horas + adoção + saúde), sem `image_file` — **fallback** automático, ver I.9.
 
@@ -543,17 +576,17 @@ O JSON abaixo é só **referência** (o que o HUB gera):
 
 # Checklists finais
 
-**Parte I — Relatório no Teams:**
+**Parte I — Convite no Teams:**
 - [ ] `REPORT_DELIVERY_PATH` numa pasta do OneDrive sincronizada + `restart_services.bat`.
 - [ ] Relatório de teste gerou o relatório + **`.pdf`** + **`.png`** + `.meta.json` e o OneDrive sincronizou (check verde).
 - [ ] Trigger **When a file is created** na pasta · **Condition** `x-ms-file-name` **contains** `meta`.
 - [ ] **Parse JSON** com `base64ToString(triggerBody()?['$content'])` + schema (Apêndice B, com `image_file`/`image_url_placeholder`).
-- [ ] **PDF:** `Meta_PDF` + `Link_PDF`. · **Imagem:** `Meta_Imagem` + `Link_Imagem` (link **direto**, `&download=1`).
+- [ ] **PDF:** `Meta_PDF` + `Link_PDF` (**Link scope: Organization**). · **Imagem:** `Meta_Imagem` + `Link_Imagem` (**Organization**, link **direto** `&download=1`).
 - [ ] **Compose "Card final"** com o **replace aninhado** (placeholder do PDF **e** da imagem).
 - [ ] **Post card in a chat or channel** (não a variante "wait for a response") → Flow bot → Group chat.
-- [ ] Card mostra **a imagem do relatório** + os **3 botões** (Abrir Playground · Solicitar Acesso · Baixar Relatório (PDF)).
+- [ ] Card-convite mostra **manchete "entre e crie seu agente" + tempo devolvido + adoção + saúde** + os **3 botões** (Abrir Playground · Solicitar Acesso · Baixar Relatório (PDF)).
 - [ ] `backend\.env` com `REPORT_CARD_PLAYGROUND_URL` (ou `PLAYGROUND_URL`) e `REPORT_CARD_ACCESS_URL` preenchidos.
-- [ ] Teste real: **Succeeded** + card no grupo com **a imagem** e **Baixar Relatório (PDF)**. *(Imagem não aparece? ver I.4.4/I.5 + fallback I.9.)*
+- [ ] Teste real: **Succeeded** + card no grupo com **a imagem-convite** e **Baixar Relatório (PDF)**. *(Imagem não aparece? ver I.4.4/I.5 + fallback I.9.)*
 
 **Parte III — Formulário de Acesso:**
 - [ ] **Lista do SharePoint** com as colunas (Title=SPEC, Solicitante, IDRede, Email, Justificativa, Status=Pendente padrão).
@@ -563,6 +596,25 @@ O JSON abaixo é só **referência** (o que o HUB gera):
 - [ ] **"Post message in a chat or channel"** para o aprovador (Apêndice C).
 - [ ] Fluxo **compartilhado (Run only users)** e acessível pela app **Workflows**.
 - [ ] Teste real: card preenchido → **linha nova na Lista (Pendente)** + aviso no Teams com link.
+
+---
+
+# Suporte, governança e riscos conhecidos
+
+**Suporte & escalonamento**
+- **Dono do processo:** área **Infotainment — Automation HUB** (ver cabeçalho deste guia).
+- **1º nível (fluxo não posta / erro no Power Automate):** dono do fluxo / co-owner → **Run history** do fluxo mostra o passo que falhou; use o **Solução de problemas** acima.
+- **2º nível (o HUB não gera `.png`/`.pdf`/`.meta.json`):** time do Automation HUB (backend) — checar `REPORT_DELIVERY_PATH`, Chromium offline e logs do serviço.
+- **Acesso a workspace (colaborador):** botão **Solicitar Acesso** (Parte III) → aprovador registrado na Lista do SharePoint.
+
+**Governança**
+- Fluxos das Partes I e III devem pertencer a uma **conta de serviço** com **co-owners** (III.6), não a uma conta pessoal.
+- A Lista do SharePoint da Parte III guarda **dados pessoais** — seguir a nota de **LGPD** da III.1 (acesso restrito, retenção, classificação Interno).
+- Compartilhamento OneDrive: **`Organization`** por padrão; **`Anyone`** só como exceção aprovada pela Segurança da Informação.
+
+**Riscos conhecidos**
+- **`&download=1`** (I.5) depende de comportamento **não documentado** da API de compartilhamento do OneDrive/SharePoint para servir os bytes do PNG ao Teams. Funciona hoje; a Microsoft pode alterar. Se a imagem parar de renderizar, o **fallback do PDF** (I.9) mantém a entrega — revalidar o link direto quando isso ocorrer.
+- **Acessibilidade:** o conteúdo do convite vive **dentro de um PNG** (leitores de tela só leem o `altText`). A versão acessível/legível por máquina é o **PDF** anexado no botão "Baixar Relatório".
 
 ---
 

@@ -356,8 +356,19 @@ def update_file(id: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404)
     
     clean_data = clean_payload(data)
-    status_changed_to_retry = clean_data.get("status") == "pending_retry" and f.status != "pending_retry"
-    
+    # O agente, ao orquestrar o proprio reenvio EM LOTE (_build_resend_batch), marca cada arquivo
+    # como pending_retry via este PUT. Sem o guard abaixo, cada marcacao dispararia um
+    # convert_and_retry_file por arquivo (1-a-1) em PARALELO ao reenvio em lote -> PDF enviado
+    # duas vezes. 'suppress_retry_task' (enviado pelo agente, nao e coluna) desliga o
+    # auto-enfileiramento; o retry manual de 1 arquivo pelo dashboard NAO envia a flag e continua
+    # gerando a task normalmente.
+    suppress_retry_task = bool((data or {}).get("suppress_retry_task"))
+    status_changed_to_retry = (
+        clean_data.get("status") == "pending_retry"
+        and f.status != "pending_retry"
+        and not suppress_retry_task
+    )
+
     for key, value in clean_data.items():
         setattr(f, key, value)
     

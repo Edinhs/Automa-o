@@ -1064,7 +1064,11 @@ def _build_resend_batch(
             update_file(
                 session,
                 file_id,
-                {"pdf_path": pdf_path, "converted_to_pdf": True, "status": "pending_retry", "playground_status": "Pending", "last_error": None},
+                # suppress_retry_task: o reenvio deste lote ja e orquestrado aqui (uma task de
+                # upload em lote no chamador); sem esta flag, o PUT a pending_retry dispararia
+                # um convert_and_retry_file por arquivo (1-a-1) em paralelo -> PDF em duplicidade.
+                {"pdf_path": pdf_path, "converted_to_pdf": True, "status": "pending_retry",
+                 "playground_status": "Pending", "last_error": None, "suppress_retry_task": True},
             )
             resent_names.append(name)
             resend_files.append(

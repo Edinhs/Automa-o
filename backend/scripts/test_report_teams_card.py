@@ -122,20 +122,20 @@ def test_adoption_card_shape() -> None:
 
 
 def _image_data() -> dict:
-    """Dados do card-imagem montados a mao (compute_card_image_data precisa de DB; aqui simulamos)."""
+    """Dados do poster-convite montados a mao (compute_card_image_data precisa de DB; aqui simulamos)."""
     return {
         "brand": "STELLANTIS AUTOMATION HUB",
-        "title": "RELATÓRIO SEMANAL",
+        "title": "CONVITE — AUTOMATION HUB",
         "period": "19/06/2026 a 25/06/2026",
         "generated_at": "25/06/2026 11:01",
-        "logo_url": "",
-        "kpis": {"files_total": 490, "files_week_delta": 135, "hours_total": "42,5 h", "hours_week_delta": "+11,3h", "workspaces": 8},
-        "specs": [
-            {"spec": "SPEC_341_Workinprogress", "description": "Workspace para gestão de especificações 341.", "updated": "25/06/2026 09:45", "files": 120},
-            {"spec": "SPEC_281_Workinprogress", "description": "Workspace para gestão de especificações 281.", "updated": "25/06/2026 08:37", "files": 95},
-        ],
-        "highlights": {"files_week": 135, "hours_total": "42,5 h",
-                       "series": [{"label": f"{d:02d}/06", "value": 190 + (d - 19) * 50} for d in range(19, 26)]},
+        "headline": rp.CARD_HEADLINE,
+        "invite_body": rp.CARD_INVITE_BODY,
+        "access_line": rp.CARD_ACCESS_LINE,
+        "playground_url": "https://genai.stellantis.com/",
+        "hours": {"week": "11,3 h", "total": "42,5 h"},
+        "hours_series": [{"label": f"{d:02d}/06", "value": 16.5 + (d - 19) * 4.3} for d in range(19, 26)],
+        "adoption": {"engineers": 7, "specs_ready": 23},
+        "health": {"items": 2, "eta": rp.CARD_HEALTH_ETA},
     }
 
 
@@ -169,14 +169,22 @@ def test_image_html_and_chart_offline() -> None:
     from app.services.report_image import build_report_image_html, _svg_line_chart
 
     data = _image_data()
-    svg = _svg_line_chart(data["highlights"]["series"])
+    svg = _svg_line_chart(data["hours_series"])
     assert svg.startswith("<svg") and "polyline" in svg, "SVG do grafico invalido"
     html = build_report_image_html(data)
     assert html.lstrip().lower().startswith("<!doctype html"), "HTML sem doctype"
-    for needle in ("490", "42,5 h", "SPEC_341_Workinprogress", "Highlights", "Abrir Playground", "Evolução de arquivos"):
+    # Poster na ordem do convite: manchete -> horas -> adocao -> saude (+ CTA do Playground).
+    for needle in (
+        "crie seu agente", "Tempo devolvido ao time", "11,3 h", "42,5 h",
+        "Engenheiros já usando", "SPECs prontas no ambiente", "em tratamento",
+        "previsão de correção", "Abrir Playground",
+    ):
         assert needle in html, f"faltou '{needle}' no HTML do poster"
+    # O que saiu de cena: KPI de contagem de arquivos, tabela SPEC-por-SPEC e workspaces.
+    for gone in ("SPEC_341", "Arquivos Processados", "Workspaces Disponíveis", "table"):
+        assert gone not in html, f"'{gone}' nao deveria mais aparecer no poster-convite"
     assert "<script" not in html.lower(), "poster deve ser 100% offline (sem <script>)"
-    print("[PASS] build_report_image_html + _svg_line_chart -> HTML/SVG offline com KPIs, SPECs e grafico")
+    print("[PASS] build_report_image_html + _svg_line_chart -> poster-convite (horas/adocao/saude), sem tabela")
 
 
 def test_adoption_card_health_and_logo() -> None:
@@ -202,7 +210,7 @@ def test_adoption_card_health_and_logo() -> None:
 def test_minutes_to_hours() -> None:
     assert rp._format_hours(0) == "0 min", rp._format_hours(0)
     assert rp._format_hours(30) == "30 min", rp._format_hours(30)   # < 1h -> minutos
-    assert rp._format_hours(90) == "1.5 h", rp._format_hours(90)    # 1-10h -> 1 decimal
+    assert rp._format_hours(90) == "1,5 h", rp._format_hours(90)    # 1-10h -> 1 decimal (pt-BR, virgula)
     assert rp._format_hours(600) == "10 h", rp._format_hours(600)   # >= 10h -> sem decimal
     assert rp._format_hours(725) == "12 h", rp._format_hours(725)
     print("[PASS] _format_hours -> minutos convertidos em horas legiveis (4 min/arquivo)")

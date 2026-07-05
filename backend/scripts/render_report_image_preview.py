@@ -25,29 +25,21 @@ from app.services.report_image import build_report_image_html, render_report_ima
 def sample_data() -> dict:
     return {
         "brand": "STELLANTIS AUTOMATION HUB",
-        "title": "RELATÓRIO SEMANAL",
+        "title": "CONVITE — AUTOMATION HUB",
         "period": "19/06/2026 a 25/06/2026",
         "generated_at": "25/06/2026 11:01",
-        "logo_url": "",
-        "kpis": {
-            "files_total": 490,
-            "files_week_delta": 135,
-            "hours_total": "42,5 h",
-            "hours_week_delta": "+11,3h",
-            "workspaces": 8,
-        },
-        "specs": [
-            {"spec": "SPEC_341_Workinprogress", "description": "Workspace para gestão de especificações 341.", "updated": "25/06/2026 09:45", "files": 120},
-            {"spec": "SPEC_281_Workinprogress", "description": "Workspace para gestão de especificações 281.", "updated": "25/06/2026 08:37", "files": 95},
-            {"spec": "SPEC_326CL_Workinprogress", "description": "Workspace para gestão de especificações 326CL.", "updated": "24/06/2026 17:12", "files": 90},
-            {"spec": "SPEC_363_Workinprogress", "description": "Workspace para gestão de especificações 363.", "updated": "24/06/2026 14:22", "files": 75},
-            {"spec": "SPEC_226_Workinprogress", "description": "Workspace para gestão de especificações 226.", "updated": "23/06/2026 16:08", "files": 60},
-        ],
-        "highlights": {
-            "files_week": 135,
-            "hours_total": "42,5 h",
-            "series": [{"label": f"{d:02d}/06", "value": v} for d, v in zip(range(19, 26), [190, 235, 285, 320, 375, 430, 490])],
-        },
+        "headline": "🚀 Seu ambiente já está pronto — entre e crie seu agente",
+        "invite_body": (
+            "Esqueça baixar a SPEC, subir no workspace seguro e montar o ambiente: a automação já fez "
+            "tudo isso. Entre no Playground e vá direto ao que importa — criar o agente no workspace do "
+            "seu projeto."
+        ),
+        "access_line": '→ Não tem acesso ao workspace? Toque em "Solicitar acesso" abaixo e preencha o formulário.',
+        "playground_url": "https://genai.stellantis.com/",
+        "hours": {"week": "11,3 h", "total": "42,5 h"},
+        "hours_series": [{"label": f"{d:02d}/06", "value": v} for d, v in zip(range(19, 26), [16.5, 20.4, 24.7, 27.8, 32.5, 37.3, 42.5])],
+        "adoption": {"engineers": 7, "specs_ready": 23},
+        "health": {"items": 2, "eta": "em até 1 dia útil"},
     }
 
 

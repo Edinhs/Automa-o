@@ -1,11 +1,22 @@
-"""Geracao do card-imagem semanal (PNG fiel ao mockup) para postar no Teams via Power Automate.
+"""Geracao do card-imagem semanal (PNG do CONVITE) para postar no Teams via Power Automate.
+
+O poster e um CONVITE, nao um relatorio de status. A ordem e sempre a mesma (a mesma do
+Adaptive Card de adocao em routers/reports.py):
+  1) Convite (manchete) — o ambiente ja esta pronto, entre e crie seu agente + como pedir acesso.
+  2) Tempo devolvido ao time (semana + acumulado) — a prova de valor.
+  3) Adocao — engenheiros usando + SPECs prontas.
+  4) Saude em 1 linha — itens em tratamento + previsao de correcao.
+FICA DE FORA (e o "quanto a maquina trabalhou", nao o que o leitor ganha): contagem de arquivos,
+tabela SPEC-por-SPEC e status cru de workspace. Detalhe fica no PDF ("Ver detalhes").
 
 Pipeline 100% offline:
   compute_card_image_data (reports.py) -> build_report_image_html (aqui) -> render_report_image_png
   usando o Chromium offline que o projeto ja embarca (Playwright, PLAYWRIGHT_BROWSERS_PATH).
 
-Sem JS/CDN: o grafico de linha e SVG inline calculado em Python. Se o Chromium nao estiver
-disponivel, render_report_image_png retorna None e o chamador cai no card-texto (fallback).
+Sem JS/CDN: o grafico de linha e SVG inline calculado em Python; a marca e o wordmark textual
+"STELLANTIS" desenhado localmente (nada de logo remota que possa nao carregar no PNG offline).
+Se o Chromium nao estiver disponivel, render_report_image_png retorna None e o chamador cai no
+card-texto (fallback).
 """
 from __future__ import annotations
 
@@ -13,9 +24,9 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-# Paleta / dimensoes do poster (fiel ao mockup Stellantis).
+# Paleta / dimensoes do poster (fiel a identidade Stellantis).
 CARD_WIDTH = 1496
-VIEWPORT = {"width": 1536, "height": 1200}
+VIEWPORT = {"width": 1536, "height": 1120}
 DEVICE_SCALE = 2
 
 _CSS = """
@@ -25,13 +36,13 @@ _CSS = """
   .card {
     width: 1496px; margin: 16px auto; border-radius: 22px; overflow: hidden;
     background: linear-gradient(160deg, #0a1a3f 0%, #0c2150 55%, #0a1836 100%);
-    color: #eaf1ff; padding: 34px 40px 26px;
+    color: #eaf1ff; padding: 34px 40px 28px;
   }
   .topbar { display: flex; justify-content: space-between; align-items: flex-start; }
   .brand { font-size: 15px; letter-spacing: 3px; color: #7fa8ff; font-weight: 700; }
-  .brand-underline { width: 210px; height: 3px; background: #2f6bff; border-radius: 3px; margin: 8px 0 14px; }
-  .title { font-size: 44px; font-weight: 800; color: #ffffff; letter-spacing: 1px; }
-  .period { font-size: 18px; color: #7fa8ff; font-weight: 600; margin-top: 6px; }
+  .brand-underline { width: 210px; height: 3px; background: #2f6bff; border-radius: 3px; margin: 8px 0 12px; }
+  .title { font-size: 30px; font-weight: 800; color: #ffffff; letter-spacing: 1px; }
+  .period { font-size: 17px; color: #7fa8ff; font-weight: 600; margin-top: 6px; }
   .wordmark { font-size: 30px; font-weight: 800; letter-spacing: 6px; color: #ffffff; text-align: right; }
   .gen-chip { margin-top: 16px; display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 12px 16px; }
@@ -39,58 +50,58 @@ _CSS = """
   .gen-chip .txt { font-size: 13px; color: #c4d4f2; line-height: 1.35; }
   .gen-chip b { color: #fff; }
 
-  .welcome { display: flex; gap: 16px; align-items: flex-start; margin: 22px 0 20px; }
-  .welcome .wic { width: 56px; height: 56px; border-radius: 50%; background: #14336e; display: grid; place-items: center; font-size: 26px; flex: 0 0 auto; }
-  .welcome h2 { font-size: 20px; color: #fff; margin-bottom: 4px; }
-  .welcome p { font-size: 15px; color: #c4d4f2; line-height: 1.5; }
+  /* 1) Convite (manchete) — painel claro para saltar aos olhos como o gancho principal. */
+  .hero { margin: 24px 0 22px; background: #f4f7fc; border-radius: 20px; padding: 30px 34px; color: #0b1f45; }
+  .hero-badge { display: inline-block; font-size: 12px; letter-spacing: 2px; font-weight: 800; text-transform: uppercase;
+    color: #2f6bff; background: #e5edff; border-radius: 999px; padding: 6px 14px; }
+  .hero h1 { font-size: 40px; line-height: 1.12; font-weight: 800; color: #0b1f45; margin: 14px 0 12px; letter-spacing: 0.3px; }
+  .hero p { font-size: 18px; line-height: 1.55; color: #33436a; max-width: 1080px; }
+  .hero .access { margin-top: 14px; font-size: 15px; color: #5b6b86; font-weight: 600; }
+  .cta { display: flex; gap: 12px; margin-top: 22px; }
+  .cta .btn { font-size: 16px; font-weight: 700; border-radius: 12px; padding: 14px 26px; }
+  .cta .solid { background: #2f6bff; color: #fff; }
+  .cta .ghost { background: transparent; border: 1.5px solid #2f6bff; color: #2f6bff; }
 
-  .kpis { background: #f4f7fc; border-radius: 16px; padding: 22px 24px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-  .kpi { display: flex; align-items: center; gap: 16px; padding: 0 10px; }
-  .kpi + .kpi { border-left: 1px solid #e2e9f5; }
-  .kpi .ic { width: 62px; height: 62px; border-radius: 16px; display: grid; place-items: center; font-size: 26px; flex: 0 0 auto; }
-  .kpi.blue .ic { background: #e5edff; } .kpi.green .ic { background: #e3f6ea; } .kpi.purple .ic { background: #ede7fb; }
-  .kpi .num { font-size: 40px; font-weight: 800; color: #0b1f45; line-height: 1; }
-  .kpi .lbl { font-size: 14px; color: #5b6b86; margin-top: 4px; }
-  .kpi .delta { font-size: 13px; font-weight: 700; color: #16a34a; margin-top: 6px; }
-
-  .panels { display: grid; grid-template-columns: 1.15fr 1fr 1.05fr; gap: 18px; margin-top: 20px; }
-  .panel { background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 20px; }
-  .panel h3 { font-size: 15px; letter-spacing: 1px; color: #cfe0ff; font-weight: 700; display: flex; align-items: center; gap: 10px; text-transform: uppercase; }
+  /* 2) Tempo devolvido — a prova de valor. */
+  .proof { display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; }
+  .panel { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 22px 24px; }
+  .panel h3 { font-size: 14px; letter-spacing: 1.5px; color: #cfe0ff; font-weight: 800; text-transform: uppercase;
+    display: flex; align-items: center; gap: 10px; }
   .panel h3 .ic { width: 30px; height: 30px; border-radius: 8px; background: #14336e; display: grid; place-items: center; font-size: 15px; }
-  .panel .sub { font-size: 13px; color: #9fb3d8; margin: 12px 0 10px; }
-
-  table.specs { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  table.specs th { text-align: left; color: #8aa0c8; font-weight: 600; padding: 8px 8px; border-bottom: 1px solid rgba(255,255,255,0.10); text-transform: uppercase; font-size: 11px; }
-  table.specs td { padding: 10px 8px; border-bottom: 1px solid rgba(255,255,255,0.06); color: #dbe6fb; vertical-align: top; }
-  table.specs td .desc { color: #9fb3d8; font-size: 11.5px; }
-  table.specs td.files { text-align: center; }
-  table.specs td.files span { background: #163a7a; color: #bcd2ff; border-radius: 8px; padding: 3px 10px; font-weight: 700; }
-  .panel .link { margin-top: 14px; font-size: 13px; color: #6fa0ff; font-weight: 600; }
-
-  .hl-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
-  .hl-row .ic { width: 46px; height: 46px; border-radius: 12px; background: #122f61; display: grid; place-items: center; font-size: 20px; }
-  .hl-row .big { font-size: 24px; font-weight: 800; color: #fff; line-height: 1; }
-  .hl-row .cap { font-size: 12.5px; color: #9fb3d8; margin-top: 3px; }
-  .chart { margin-top: 14px; background: rgba(255,255,255,0.04); border-radius: 12px; padding: 12px 10px 6px; }
+  .hours-grid { display: flex; gap: 16px; margin-top: 18px; }
+  .hstat { flex: 1; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px 20px; }
+  .hstat .num { font-size: 46px; font-weight: 800; color: #ffffff; line-height: 1; }
+  .hstat .lbl { font-size: 14px; color: #9fb3d8; margin-top: 8px; }
+  .hstat.week .num { color: #6ee7a8; }
+  .proof-note { font-size: 13.5px; color: #9fb3d8; margin-top: 16px; line-height: 1.45; }
+  .chart { margin-top: 10px; background: rgba(255,255,255,0.04); border-radius: 12px; padding: 12px 10px 6px; }
   .chart .ct { font-size: 11px; letter-spacing: 1px; color: #8aa0c8; text-align: center; text-transform: uppercase; margin-bottom: 6px; }
 
-  .pitch { font-size: 14px; color: #dbe6fb; line-height: 1.5; margin: 12px 0 14px; }
-  .bul { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: #dbe6fb; padding: 7px 0; }
-  .bul .ck { width: 24px; height: 24px; border-radius: 50%; background: #16a34a; color: #fff; display: grid; place-items: center; font-size: 13px; flex: 0 0 auto; }
-  .promo { margin-top: 14px; background: rgba(47,107,255,0.12); border: 1px solid rgba(47,107,255,0.30); border-radius: 12px; padding: 14px; }
-  .promo b { color: #fff; font-size: 14px; } .promo p { color: #bcd2ff; font-size: 12.5px; margin-top: 4px; }
-  .btns { display: flex; gap: 10px; margin-top: 16px; }
-  .btn { flex: 1; text-align: center; border-radius: 10px; padding: 11px 8px; font-size: 13px; font-weight: 700; }
-  .btn.solid { background: #0f2f6b; color: #fff; } .btn.ghost { background: transparent; border: 1px solid #3b6bd6; color: #bcd2ff; }
+  /* 3) Adocao — dois cartoes de numero. */
+  .adopt { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+  .astat { display: flex; align-items: center; gap: 18px; background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 20px 24px; }
+  .astat .ic { width: 60px; height: 60px; border-radius: 16px; background: #14336e; display: grid; place-items: center; font-size: 26px; flex: 0 0 auto; }
+  .astat .num { font-size: 40px; font-weight: 800; color: #ffffff; line-height: 1; }
+  .astat .lbl { font-size: 15px; color: #9fb3d8; margin-top: 6px; }
 
-  .footer { display: flex; align-items: center; gap: 18px; margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,0.10); font-size: 13px; color: #9fb3d8; }
+  /* 4) Saude — uma linha. */
+  .health { margin-top: 18px; border-radius: 14px; padding: 16px 22px; font-size: 16px; font-weight: 600;
+    display: flex; align-items: center; gap: 12px; }
+  .health.ok { background: rgba(22,163,74,0.14); border: 1px solid rgba(22,163,74,0.35); color: #b7f7cf; }
+  .health.warn { background: rgba(245,158,11,0.14); border: 1px solid rgba(245,158,11,0.35); color: #fde3ac; }
+  .health .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
+  .health.ok .dot { background: #16a34a; } .health.warn .dot { background: #f59e0b; }
+
+  .footer { display: flex; align-items: center; gap: 18px; margin-top: 24px; padding-top: 18px;
+    border-top: 1px solid rgba(255,255,255,0.10); font-size: 13px; color: #9fb3d8; }
   .footer .fic { width: 42px; height: 42px; border-radius: 50%; background: #14336e; display: grid; place-items: center; font-size: 18px; flex: 0 0 auto; }
   .footer .fword { margin-left: auto; font-size: 18px; font-weight: 800; letter-spacing: 5px; color: #dbe6fb; }
 </style>
 """
 
 
-def _svg_line_chart(series: list[dict[str, Any]], width: int = 540, height: int = 190, pad: int = 30) -> str:
+def _svg_line_chart(series: list[dict[str, Any]], width: int = 560, height: int = 200, pad: int = 32) -> str:
     """Grafico de linha (SVG inline, offline) a partir da serie cumulativa diaria."""
     if not series:
         return ""
@@ -114,12 +125,19 @@ def _svg_line_chart(series: list[dict[str, Any]], width: int = 540, height: int 
         + f" L {pts[-1][0]:.1f},{height - pad:.1f} Z"
     )
     circles = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="#2f6bff"/>' for x, y in pts)
+    # Em semanas de volume baixo (poucas horas) os rotulos inteiros colapsam (ex.: "4/4/3");
+    # usa 1 casa decimal (pt-BR) quando a escala e pequena, inteiro quando ja e grande.
+    axis_decimals = 1 if vmax < 20 else 0
+
+    def _axis_label(value: float) -> str:
+        return f"{value:.{axis_decimals}f}".replace(".", ",")
+
     grid = ""
     for frac in (0.0, 0.5, 1.0):
         v = vmin + span * frac
         yy = pad + plot_h * (1 - frac)
         grid += f'<line x1="{pad}" y1="{yy:.1f}" x2="{width - pad}" y2="{yy:.1f}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>'
-        grid += f'<text x="{pad - 8}" y="{yy + 4:.1f}" font-size="11" fill="#8aa0c8" text-anchor="end">{int(round(v))}</text>'
+        grid += f'<text x="{pad - 8}" y="{yy + 4:.1f}" font-size="11" fill="#8aa0c8" text-anchor="end">{_axis_label(v)}</text>'
     xlabels = "".join(
         f'<text x="{x_at(i):.1f}" y="{height - 8}" font-size="11" fill="#8aa0c8" text-anchor="middle">{escape(str(series[i].get("label", "")))}</text>'
         for i in range(n)
@@ -133,28 +151,26 @@ def _svg_line_chart(series: list[dict[str, Any]], width: int = 540, height: int 
     )
 
 
-def _spec_rows_html(specs: list[dict[str, Any]]) -> str:
-    if not specs:
-        return '<tr><td colspan="4" style="color:#9fb3d8;padding:14px 8px;">Nenhuma SPEC disponível ainda.</td></tr>'
-    out = []
-    for s in specs:
-        out.append(
-            "<tr>"
-            f'<td><b>{escape(str(s.get("spec", "")))}</b></td>'
-            f'<td><span class="desc">{escape(str(s.get("description", "")))}</span></td>'
-            f'<td>{escape(str(s.get("updated", "")))}</td>'
-            f'<td class="files"><span>{escape(str(s.get("files", 0)))}</span></td>'
-            "</tr>"
-        )
-    return "".join(out)
-
-
 def build_report_image_html(data: dict[str, Any]) -> str:
-    """Monta o HTML completo do poster a partir dos dados de compute_card_image_data."""
-    kpis = data.get("kpis", {})
-    hl = data.get("highlights", {})
-    chart = _svg_line_chart(hl.get("series", []))
-    spec_rows = _spec_rows_html(data.get("specs", []))
+    """Monta o HTML do poster-convite a partir dos dados de compute_card_image_data."""
+    hours = data.get("hours", {}) or {}
+    adoption = data.get("adoption", {}) or {}
+    health = data.get("health", {}) or {}
+    chart = _svg_line_chart(data.get("hours_series", []))
+
+    health_items = int(health.get("items", 0) or 0)
+    if health_items > 0:
+        eta = str(health.get("eta", "")).strip()
+        eta_txt = f" — previsão de correção {eta}" if eta else ""
+        health_html = (
+            f'<div class="health warn"><span class="dot"></span>'
+            f'⚠️ {health_items} item(ns) em tratamento{escape(eta_txt)}. Já estamos resolvendo.</div>'
+        )
+    else:
+        health_html = (
+            '<div class="health ok"><span class="dot"></span>'
+            '✅ Tudo certo — nenhum item em tratamento nesta semana.</div>'
+        )
 
     body = f"""
 <div class="card">
@@ -162,7 +178,7 @@ def build_report_image_html(data: dict[str, Any]) -> str:
     <div>
       <div class="brand">{escape(str(data.get("brand", "STELLANTIS AUTOMATION HUB")))}</div>
       <div class="brand-underline"></div>
-      <div class="title">{escape(str(data.get("title", "RELATÓRIO SEMANAL")))}</div>
+      <div class="title">{escape(str(data.get("title", "CONVITE — AUTOMATION HUB")))}</div>
       <div class="period">{escape(str(data.get("period", "")))}</div>
     </div>
     <div>
@@ -174,70 +190,48 @@ def build_report_image_html(data: dict[str, Any]) -> str:
     </div>
   </div>
 
-  <div class="welcome">
-    <div class="wic">👋</div>
-    <div>
-      <h2>Olá, time Stellantis!</h2>
-      <p>Seja bem-vindo ao relatório semanal do Automation HUB.<br>
-      Aqui você acompanha os principais resultados das automações e o impacto gerado no Stellantis GenAI Playground.</p>
+  <div class="hero">
+    <span class="hero-badge">Convite</span>
+    <h1>{escape(str(data.get("headline", "Seu ambiente já está pronto — entre e crie seu agente")))}</h1>
+    <p>{escape(str(data.get("invite_body", "")))}</p>
+    <div class="access">{escape(str(data.get("access_line", "")))}</div>
+    <div class="cta">
+      <div class="btn solid">🌐 Abrir Playground</div>
+      <div class="btn ghost">📄 Baixar Relatório (PDF)</div>
     </div>
   </div>
 
-  <div class="kpis">
-    <div class="kpi blue">
-      <div class="ic">📄</div>
-      <div><div class="num">{escape(str(kpis.get("files_total", 0)))}</div>
-        <div class="lbl">Arquivos Processados</div>
-        <div class="delta">+{escape(str(kpis.get("files_week_delta", 0)))} na última semana</div></div>
+  <div class="proof">
+    <div class="panel">
+      <h3><span class="ic">⏱️</span> Tempo devolvido ao time</h3>
+      <div class="hours-grid">
+        <div class="hstat week"><div class="num">{escape(str(hours.get("week", "0 h")))}</div><div class="lbl">Esta semana</div></div>
+        <div class="hstat"><div class="num">{escape(str(hours.get("total", "0 h")))}</div><div class="lbl">Acumulado</div></div>
+      </div>
+      <div class="proof-note">Cada arquivo preparado é setup que ninguém precisou fazer à mão — baixar a SPEC, subir no workspace seguro e montar o ambiente. Isso já vem pronto.</div>
     </div>
-    <div class="kpi green">
-      <div class="ic">🕐</div>
-      <div><div class="num">{escape(str(kpis.get("hours_total", "0 h")))}</div>
-        <div class="lbl">Horas Economizadas com automações</div>
-        <div class="delta">{escape(str(kpis.get("hours_week_delta", "+0h")))} na última semana</div></div>
-    </div>
-    <div class="kpi purple">
-      <div class="ic">📁</div>
-      <div><div class="num">{escape(str(kpis.get("workspaces", 0)))}</div>
-        <div class="lbl">Workspaces Disponíveis</div></div>
+    <div class="panel">
+      <h3><span class="ic">📈</span> Evolução do tempo devolvido</h3>
+      <div class="chart"><div class="ct">Horas economizadas (acumulado, últimos 7 dias)</div>{chart}</div>
     </div>
   </div>
 
-  <div class="panels">
-    <div class="panel">
-      <h3><span class="ic">📋</span> SPECs Disponíveis</h3>
-      <div class="sub">Confira abaixo as SPECs disponíveis para uso no Playground.</div>
-      <table class="specs">
-        <thead><tr><th>SPEC</th><th>Descrição</th><th>Última atualização</th><th style="text-align:center">Arquivos</th></tr></thead>
-        <tbody>{spec_rows}</tbody>
-      </table>
-      <div class="link">Ver todos os workspaces disponíveis →</div>
+  <div class="adopt">
+    <div class="astat">
+      <div class="ic">👥</div>
+      <div><div class="num">{escape(str(adoption.get("engineers", 0)))}</div><div class="lbl">Engenheiros já usando</div></div>
     </div>
-
-    <div class="panel">
-      <h3><span class="ic">⭐</span> Highlights da Semana</h3>
-      <div class="hl-row"><div class="ic">📄</div><div><div class="big">{escape(str(hl.get("files_week", 0)))}</div><div class="cap">Arquivos atualizados nesta semana</div></div></div>
-      <div class="hl-row"><div class="ic">🕐</div><div><div class="big">{escape(str(hl.get("hours_total", "0 h")))}</div><div class="cap">Horas economizadas com automações</div></div></div>
-      <div class="hl-row" style="border-bottom:none"><div class="ic">📊</div><div><div class="big" style="font-size:18px">Crescimento contínuo</div><div class="cap">Mais eficiência, menos retrabalho.</div></div></div>
-      <div class="chart"><div class="ct">Evolução de arquivos processados</div>{chart}</div>
-    </div>
-
-    <div class="panel">
-      <h3><span class="ic">🤖</span> Stellantis GenAI Playground</h3>
-      <div class="pitch">O Stellantis GenAI Playground é nossa plataforma corporativa para colaboração, inovação e produtividade com Inteligência Artificial.</div>
-      <div class="bul"><span class="ck">✓</span> Centralize conhecimento e documentos</div>
-      <div class="bul"><span class="ck">✓</span> Acelere análises e tomada de decisão</div>
-      <div class="bul"><span class="ck">✓</span> Automatize tarefas e reduza retrabalho</div>
-      <div class="bul"><span class="ck">✓</span> Promova inovação com segurança e governança</div>
-      <div class="promo"><b>🚀 Impulsionando o futuro com Inteligência Artificial.</b><p>Mais produtividade. Mais inovação. Mais Stellantis.</p></div>
-      <div class="btns"><div class="btn solid">🌐 Abrir Playground</div><div class="btn ghost">📄 Baixar Relatório (PDF)</div></div>
+    <div class="astat">
+      <div class="ic">📋</div>
+      <div><div class="num">{escape(str(adoption.get("specs_ready", 0)))}</div><div class="lbl">SPECs prontas no ambiente</div></div>
     </div>
   </div>
+
+  {health_html}
 
   <div class="footer">
-    <div class="fic">📁</div>
-    <div>Este relatório é gerado automaticamente pelo Stellantis Automation HUB e reflete o desempenho<br>das automações e o impacto positivo no seu dia a dia.</div>
-    <div style="display:flex;align-items:center;gap:10px;margin-left:24px"><div class="fic">🏆</div><div>Obrigado por fazer parte desta<br>jornada de transformação e inovação!</div></div>
+    <div class="fic">🚀</div>
+    <div>Stellantis GenAI Playground — mais produtividade, menos retrabalho.<br>Entre e crie seu agente direto no workspace do seu projeto.</div>
     <div class="fword">STELLANTIS</div>
   </div>
 </div>

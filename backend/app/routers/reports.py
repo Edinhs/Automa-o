@@ -911,16 +911,22 @@ CARD_INVITE_BODY = (
 # "Como pedir acesso" (parte do convite). O botao "Solicitar acesso" so aparece se REPORT_CARD_ACCESS_URL
 # estiver setado; esta linha funciona como instrucao mesmo sem o botao.
 CARD_ACCESS_LINE = '→ Não tem acesso ao workspace? Toque em "Solicitar acesso" abaixo e preencha o formulário.'
+# Saude em 1 linha: previsao de correcao exibida quando ha itens em tratamento. Frase editavel
+# (decisao de produto: nao ha campo de ETA por item — e uma promessa de SLA operacional do time).
+CARD_HEALTH_ETA = "em até 1 dia útil"
 
 
 def _format_hours(minutes: float) -> str:
-    """Formata minutos economizados como horas legiveis para o card (ou minutos se < 1h)."""
+    """Formata minutos economizados como horas legiveis (pt-BR: virgula decimal) para o card.
+
+    < 1h -> minutos; 1-10h -> 1 casa com virgula (ex.: '1,5 h'); >= 10h -> sem decimal ('12 h').
+    """
     minutes = max(0.0, float(minutes or 0))
     hours = minutes / 60.0
     if hours >= 10:
         return f"{hours:.0f} h"
     if hours >= 1:
-        return f"{hours:.1f} h"
+        return f"{hours:.1f} h".replace(".", ",")
     return f"{int(round(minutes))} min"
 
 
@@ -979,16 +985,13 @@ def compute_card_business(db: Session, now: datetime | None = None) -> dict[str,
     }
 
 
-def _fmt_hours_br(hours_value: float) -> str:
-    """Horas com 1 casa e virgula decimal (pt-BR), p/ o card-imagem. Ex.: 42.5 -> '42,5 h'."""
-    return f"{max(0.0, float(hours_value or 0)):.1f}".replace(".", ",") + " h"
-
-
 def compute_card_image_data(db: Session, now: datetime | None = None) -> dict[str, Any]:
-    """Dados dinamicos do card-imagem semanal (KPIs + SPECs + Highlights + serie do grafico).
+    """Dados dinamicos do poster-convite semanal (a mesma ordem do Adaptive Card de adocao).
 
-    Reaproveita compute_card_business (horas/arquivos/adocao/saude) e block_simplificado (SPECs).
-    Conteudo estatico (boas-vindas, bullets, rodape) vive no template HTML (report_image.py).
+    Entrega ao template (report_image.py): 1) convite (manchete/corpo/como pedir acesso);
+    2) horas devolvidas ao time (semana + acumulado) + serie cumulativa EM HORAS p/ o grafico;
+    3) adocao (engenheiros/SPECs prontas); 4) saude (itens + previsao de correcao).
+    FICA DE FORA: contagem de arquivos, tabela SPEC-por-SPEC e status cru de workspace.
     """
     now_utc = now or datetime.utcnow()
     week_start = now_utc - timedelta(days=7)
@@ -997,37 +1000,9 @@ def compute_card_image_data(db: Session, now: datetime | None = None) -> dict[st
     files_total = int(hours.get("files_total", 0) or 0)
     files_week = int(hours.get("files_week", 0) or 0)
     minutes_per_file = float(hours.get("minutes_per_file", 0) or 0)
-    hours_total_value = files_total * minutes_per_file / 60.0
-    hours_week_value = files_week * minutes_per_file / 60.0
 
-    workspaces_count = int(
-        db.query(func.count(Workspace.id)).filter(Workspace.is_deleted == False).scalar() or 0
-    )
-
-    # SPECs (top 5): reaproveita a classificacao por workspace do relatorio simplificado (all-time).
-    all_time = {"start": None, "end": None, "automation_id": None, "workspace_id": None, "status": None, "source_task_id": None}
-    simpl = block_simplificado(db, all_time, lookup_maps(db))  # cols: SPEC, %, STATUS, OBS, ULTIMA ATUALIZACAO, ARQUIVOS
-    descriptions = {
-        (ws.name or ""): (ws.description or "").strip()
-        for ws in db.query(Workspace).filter(Workspace.is_deleted == False).all()
-    }
-    specs: list[dict[str, Any]] = []
-    for r in simpl.rows:
-        name = str(r[0])
-        try:
-            files_count = int(r[5])
-        except (ValueError, TypeError):
-            files_count = 0
-        specs.append({
-            "spec": name,
-            "description": descriptions.get(name) or f"Workspace para gestão de especificações {name}.",
-            "updated": str(r[4]),
-            "files": files_count,
-        })
-    specs.sort(key=lambda x: x["files"], reverse=True)
-    specs = specs[:5]
-
-    # Serie diaria cumulativa de arquivos processados nos ultimos 7 dias (p/ o grafico de linha).
+    # Serie diaria cumulativa dos ultimos 7 dias, convertida em HORAS devolvidas (prova de valor,
+    # nao "arquivos processados"): horas = arquivos_cumulativos x minutos_por_arquivo / 60.
     sent_filter = (
         WorkspaceFile.is_deleted == False,
         func.lower(WorkspaceFile.status).in_(SENT_FILE_STATUSES),
@@ -1045,35 +1020,27 @@ def compute_card_image_data(db: Session, now: datetime | None = None) -> dict[st
         day_counts[day] = day_counts.get(day, 0) + 1
     today_local = to_sao_paulo_naive(now_utc, assume_utc=True).date()
     cumulative = max(0, files_total - files_week)  # base = processados antes da janela de 7 dias
-    series: list[dict[str, Any]] = []
+    hours_series: list[dict[str, Any]] = []
     for i in range(6, -1, -1):
         day = today_local - timedelta(days=i)
         cumulative += day_counts.get(day, 0)
-        series.append({"label": day.strftime("%d/%m"), "value": cumulative})
+        hours_series.append({"label": day.strftime("%d/%m"), "value": round(cumulative * minutes_per_file / 60.0, 1)})
 
     p_start = to_sao_paulo_naive(week_start, assume_utc=True).strftime("%d/%m/%Y")
     p_end = today_local.strftime("%d/%m/%Y")
     return {
         "brand": "STELLANTIS AUTOMATION HUB",
-        "title": "RELATÓRIO SEMANAL",
+        "title": "CONVITE — AUTOMATION HUB",
         "period": f"{p_start} a {p_end}",
         "generated_at": to_sao_paulo_naive(now_utc, assume_utc=True).strftime("%d/%m/%Y %H:%M"),
-        "logo_url": str(settings.REPORT_CARD_LOGO_URL or "").strip(),
-        "kpis": {
-            "files_total": files_total,
-            "files_week_delta": files_week,
-            "hours_total": _fmt_hours_br(hours_total_value),
-            "hours_week_delta": "+" + f"{hours_week_value:.1f}".replace(".", ",") + "h",
-            "workspaces": workspaces_count,
-        },
-        "specs": specs,
-        "highlights": {
-            "files_week": files_week,
-            "hours_total": _fmt_hours_br(hours_total_value),
-            "series": series,
-        },
+        "headline": CARD_HEADLINE,
+        "invite_body": CARD_INVITE_BODY,
+        "access_line": CARD_ACCESS_LINE,
+        "playground_url": str(settings.REPORT_CARD_PLAYGROUND_URL or settings.PLAYGROUND_URL or "").strip(),
+        "hours": {"week": str(hours.get("week", "0 h")), "total": str(hours.get("total", "0 h"))},
+        "hours_series": hours_series,
         "adoption": business.get("adoption", {}),
-        "health": business.get("health", {}),
+        "health": {**business.get("health", {}), "eta": CARD_HEALTH_ETA},
     }
 
 
@@ -1225,10 +1192,12 @@ def build_adoption_card(card: dict[str, Any]) -> dict[str, Any]:
         {"title": "SPECs prontas", "value": str(adoption.get("specs_ready", 0))},
     ]})
 
-    # 4) Saude em 1 linha (sem ETA: linha generica).
+    # 4) Saude em 1 linha: itens em tratamento + previsao de correcao.
     items = int((card.get("health") or {}).get("items") or 0)
     if items > 0:
-        body.append({"type": "TextBlock", "text": f"⚠️ {items} item(ns) em tratamento — já resolvendo.", "color": "Warning", "wrap": True, "separator": True, "spacing": "Medium"})
+        eta = str((card.get("health") or {}).get("eta") or CARD_HEALTH_ETA).strip()
+        eta_txt = f" — previsão de correção {eta}" if eta else ""
+        body.append({"type": "TextBlock", "text": f"⚠️ {items} item(ns) em tratamento{eta_txt}. Já estamos resolvendo.", "color": "Warning", "wrap": True, "separator": True, "spacing": "Medium"})
     else:
         body.append({"type": "TextBlock", "text": "✅ Tudo certo — sem itens em tratamento.", "color": "Good", "wrap": True, "separator": True, "spacing": "Medium"})
 
