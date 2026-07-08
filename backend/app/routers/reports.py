@@ -836,10 +836,11 @@ def persist_report(
         report.id,
         metadata={"source_scope": REPORT_SOURCE_SCOPE, "generation_trigger": generation_trigger, "source_task_id": source_task_id},
     )
-    # Copia para a pasta de entrega (REPORT_DELIVERY_PATH / Power Automate) e OPT-IN: so acontece
-    # quando o chamador pede (agendamento com "deliver_to_folder"). Por padrao o relatorio fica
-    # apenas em REPORTS_PATH (backend/data/reports).
-    if deliver_to_folder:
+    # Copia para a pasta de entrega (REPORT_DELIVERY_PATH / Power Automate) SOMENTE para o
+    # "Relatório Simplificado": geração manual entrega automaticamente; agendamento respeita o
+    # toggle deliver_to_folder. Qualquer outro tipo segue o caminho natural (só REPORTS_PATH).
+    should_deliver = report_type == "Relatório Simplificado" and (deliver_to_folder or generation_trigger == "manual")
+    if should_deliver:
         try:
             bundle = report_delivery_bundle(db, report.id)
             delivery_path = write_report_to_delivery_folder(bundle)
