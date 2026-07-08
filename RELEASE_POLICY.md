@@ -22,9 +22,7 @@ Este computador e o ambiente de desenvolvimento e teste local do projeto. A rele
 - `backend\alembic.ini`
 - `backend\ms-playwright`, contendo somente o runtime Chromium offline necessario
 - `backend\wheels`, quando existir
-- `custom_automations` (feature IPC Workspace Updater; o router `backend\app\routers\custom_automations.py` a importa no startup -- sem ela o backend quebra por ImportError)
 - scripts `.bat` de setup/inicializacao/parada (`start_*`, `stop_all.bat`, `restart_services.bat`, `setup_backend.bat`) e `start_all_hidden.vbs`
-- `run_ipc_updater.bat` (launcher da feature IPC)
 - `scripts\build_release_empty_db.py`
 - `scripts\build_update_package.py`
 - documentacao de operacao e release
@@ -75,7 +73,7 @@ atualizacao (overlay):
 - Gera `releases\hub_update_COMPLETO_YYYYMMDD_HHMMSS.zip` com as entradas na raiz
   (extrair por cima da instalacao sobrepoe os arquivos no lugar).
 - Inclui apenas a aplicacao: `backend\app`, `backend\alembic`, `dist`, `public`,
-  `custom_automations`, os `scripts` de build da raiz, documentacao e os `.bat` de
+  os `scripts` de build da raiz, documentacao e os `.bat` de
   operacao -- incluindo `stop_all.bat` e `restart_services.bat`. **NAO** inclui
   `backend\scripts` (testes/dumps de dev).
 - **NAO inclui** banco de dados, `backend\data`, `.venv`, `node_modules` nem o

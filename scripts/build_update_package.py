@@ -48,8 +48,6 @@ ROOT_FILES = [
     "start_dashboard.bat",
     "stop_all.bat",
     "restart_services.bat",
-    # Launcher da feature Automacoes Personalizadas (IPC Workspace Updater).
-    "run_ipc_updater.bat",
 ]
 
 # Operational / release documentation worth carrying in an update.
@@ -63,9 +61,7 @@ DOC_FILES = [
 ]
 
 # Application overlay. NO backend/data, NO ms-playwright, NO .venv (preserves DB/runtime).
-# "custom_automations" traz o codigo da feature IPC Workspace Updater (import do router
-# backend/app/routers/custom_automations.py). copy_dir ignora __pycache__/.pyc automaticamente.
-ROOT_DIRS = ["dist", "public", "scripts", "custom_automations"]
+ROOT_DIRS = ["dist", "public", "scripts"]
 BACKEND_FILES = ["requirements.txt", ".env.example", "alembic.ini"]
 # NAO inclui "scripts": backend/scripts sao testes/dumps de DEV (test_*.py, *_dump.json) que o
 # backend nao importa em runtime -- alinhado ao strict builder (build_release_empty_db.py), que
@@ -86,7 +82,7 @@ def is_forbidden(relative: str, name: str, suffix: str, parts: set[str]) -> bool
     # dist/ carries tracked *.bak_* hand-edit backups that must not ship.
     if ".bak" in name:
         return True
-    # Testes de dev soltos (ex.: custom_automations/.../test_ipc_updater.py) nunca vao ao pacote.
+    # Testes de dev soltos (test_*.py) nunca vao ao pacote.
     if name.startswith("test_") and name.endswith(".py"):
         return True
     return False

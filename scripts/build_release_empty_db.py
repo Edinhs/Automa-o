@@ -31,14 +31,9 @@ ROOT_FILES = [
     "start_all_hidden.vbs",
     "start_backend.bat",
     "start_dashboard.bat",
-    # Launcher da feature Automacoes Personalizadas (IPC Workspace Updater).
-    "run_ipc_updater.bat",
 ]
 
-# "custom_automations" traz o codigo da feature IPC Workspace Updater, importado pelo router
-# backend/app/routers/custom_automations.py. Sem ela o backend quebra no startup (ImportError).
-# copy_dir/ignore_runtime ja descarta __pycache__/.pyc.
-ROOT_DIRS = ["dist", "public", "scripts", "custom_automations"]
+ROOT_DIRS = ["dist", "public", "scripts"]
 BACKEND_FILES = ["requirements.txt", ".env.example", "alembic.ini"]
 BACKEND_DIRS = ["app", "alembic", "wheels"]
 
@@ -83,7 +78,7 @@ def ignore_runtime(dir_path: str, names: list[str]) -> set[str]:
             or name in FORBIDDEN_FILE_NAMES
             or path.suffix.lower() in FORBIDDEN_SUFFIXES
             or ".bak" in name
-            # Testes de dev soltos (ex.: custom_automations/.../test_ipc_updater.py) nunca vao ao
+            # Testes de dev soltos (test_*.py) nunca vao ao
             # release -- o backend nao os importa em runtime.
             or (name.startswith("test_") and name.endswith(".py"))
         ):
