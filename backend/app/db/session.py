@@ -29,7 +29,10 @@ def _create_engine(database_url: str):
         def _set_sqlite_pragmas(dbapi_conn, connection_record):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
+            # 15s: o agente registra arquivos em rajada (2 commits por arquivo) enquanto
+            # scheduler/monitor tambem gravam; com 5s um lote grande estourava
+            # "database is locked" -> 500 no POST /api/files.
+            cursor.execute("PRAGMA busy_timeout=15000")
             cursor.close()
     return created_engine
 
@@ -64,5 +67,12 @@ def get_db():
     db = session_for_environment()
     try:
         yield db
+    except Exception:
+        # Sem este rollback, uma requisicao que estoura no meio de uma transacao
+        # devolvia a conexao ao pool ainda "suja" -> a proxima requisicao que
+        # pegasse essa conexao falhava com PendingRollbackError (500 em cascata,
+        # intermitente e espalhado por varios endpoints).
+        db.rollback()
+        raise
     finally:
         db.close()

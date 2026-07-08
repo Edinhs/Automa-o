@@ -220,9 +220,86 @@ def create_file(data: dict, db: Session = Depends(get_db)):
         automation = db.query(Automation).filter(Automation.id == clean["automation_id"], Automation.is_deleted == False).first()
         if automation and automation.workspace_id is not None:
             clean["workspace_id"] = automation.workspace_id
+
+    sha = clean.get("content_sha256")
+    automation_id = clean.get("automation_id")
+    original_path = clean.get("original_path")
+
+    def _find_existing():
+        # Reaproveita a linha existente do mesmo arquivo em vez de inserir duplicata:
+        #   - por content_sha256, quando enviado (compat; ha UNIQUE(automation_id, content_sha256));
+        #   - por original_path, na deteccao por mtime (sem hash) -> mantem UMA linha por caminho.
+        # Arquivos distintos tem caminhos distintos, entao nunca compartilham a mesma linha
+        # dentro de uma execucao -- nao reintroduz a colisao de file_id entre lotes que quebrava
+        # o checkpoint do batch-complete.
+        if automation_id is None:
+            return None
+        base = db.query(WorkspaceFile).filter(
+            WorkspaceFile.automation_id == automation_id,
+            WorkspaceFile.is_deleted == False,
+        )
+        if sha:
+            found = base.filter(WorkspaceFile.content_sha256 == sha).order_by(WorkspaceFile.id.desc()).first()
+            if found:
+                return found
+        if original_path:
+            return base.filter(WorkspaceFile.original_path == original_path).order_by(WorkspaceFile.id.desc()).first()
+        return None
+
+    def _revive(existing: WorkspaceFile) -> dict:
+        # Reaproveita a linha existente do mesmo arquivo (mesmo caminho, ou mesmo conteudo)
+        # em vez de inserir uma duplicata. Cobre:
+        #   1) reprocessamento de um arquivo que falhou (fora do baseline -> re-detectado),
+        #      cuja linha antiga ainda existe no banco;
+        #   2) re-deteccao por mtime de um arquivo atualizado no mesmo caminho.
+        # Atualiza deteccao/localizacao e reinicia o ciclo de envio na propria linha.
+        for field in ("file_name", "original_path", "temp_path", "pdf_path", "extension",
+                      "size_bytes", "detection_source", "detection_task_id",
+                      "detection_classification", "workspace_id", "max_attempts"):
+            value = clean.get(field)
+            if value is not None:
+                setattr(existing, field, value)
+        # content_sha256 acompanha o registro atual (None no fluxo de deteccao por mtime),
+        # para nao deixar um hash antigo/estale preso numa linha de conteudo ja modificado.
+        existing.content_sha256 = clean.get("content_sha256")
+        existing.status = clean.get("status") or "pending"
+        existing.playground_status = clean.get("playground_status") or "Pending"
+        existing.attempts = 0
+        existing.last_error = None
+        existing.converted_to_pdf = False
+        existing.detected_at = clean.get("detected_at") or datetime.utcnow()
+        existing.uploaded_at = None
+        existing.ready_at = None
+        existing.failed_at = None
+        existing.manual_review_at = None
+        try:
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(500, f"Failed to re-register file '{clean.get('file_name')}': {exc}") from exc
+        db.refresh(existing)
+        create_log(db, "info", f"File re-registered (dedup): {existing.file_name}", "workspace_file", existing.id, automation_id=existing.automation_id, file_id=existing.id)
+        return file_out(existing)
+
+    # Caminho de dedup: se ja existe linha para este conteudo nesta automacao, revive-a.
+    existing = _find_existing()
+    if existing is not None:
+        return _revive(existing)
+
     f = WorkspaceFile(**clean)
     db.add(f)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        # Corrida: outra requisicao pode ter inserido a mesma (automation_id, sha) entre o
+        # SELECT acima e este INSERT. Se for esse o caso, reaproveita a linha ja existente
+        # em vez de estourar 500. Qualquer outra falha (locked, schema, etc.) e reportada
+        # com a causa real, que o agente registra no log.
+        existing = _find_existing()
+        if existing is not None:
+            return _revive(existing)
+        raise HTTPException(500, f"Failed to register file '{clean.get('file_name')}': {exc}") from exc
     db.refresh(f)
     create_log(db, "info", f"File registered: {f.file_name}", "workspace_file", f.id, automation_id=f.automation_id, file_id=f.id)
     return file_out(f)
@@ -312,8 +389,12 @@ def get_upload_baseline(automation_id: int, db: Session = Depends(get_db)):
     # Inclui todos os registros que atingiram um estado terminal de sucesso:
     # - uploaded_at preenchido (upload confirmado pelo checkpoint do lote), OU
     # - status "ready" ou "uploaded" (fallback para registros legados sem uploaded_at).
-    # Exclui status de erro/revisao manual para que arquivos com falha possam ser
+    # Exclui status de erro/revisao manual/retry para que arquivos com falha possam ser
     # reprocessados normalmente em ciclos futuros (comportamento aceito pelo usuario).
+    # IMPORTANTE: a exclusao de erro/retry precisa valer MESMO quando uploaded_at esta
+    # preenchido. Um arquivo enviado uma vez grava uploaded_at permanentemente; se depois
+    # ele falhar/virar revisao, sem este segundo filtro ele continuaria "preso" no baseline
+    # e nunca seria reenviado -> automacao de pasta ficava em no_changes e nao enviava nada.
     files = (
         db.query(WorkspaceFile)
         .filter(
@@ -323,6 +404,10 @@ def get_upload_baseline(automation_id: int, db: Session = Depends(get_db)):
             or_(
                 WorkspaceFile.uploaded_at.isnot(None),
                 WorkspaceFile.status.in_(["ready", "uploaded"]),
+            ),
+            or_(
+                WorkspaceFile.status.is_(None),
+                WorkspaceFile.status.notin_(["error", "failed", "manual_review", "pending_retry"]),
             ),
         )
         .order_by(WorkspaceFile.uploaded_at.desc(), WorkspaceFile.id.desc())

@@ -60,7 +60,18 @@ def request_json(session: requests.Session, method: str, path: str, payload: Opt
     if method.upper() != "GET":
         kwargs["json"] = payload or {}
     response = session.request(method, f"{API_BASE_URL}{path}", **kwargs)
-    response.raise_for_status()
+    if response.status_code >= 400:
+        # raise_for_status() sozinho descarta o corpo da resposta, entao um 500
+        # aparecia no log apenas como "Internal Server Error" sem a causa. Anexamos
+        # o corpo (truncado) para que o motivo real do backend fique registrado.
+        detail = (response.text or "").strip().replace("\n", " ")
+        if len(detail) > 500:
+            detail = detail[:500] + "..."
+        raise requests.HTTPError(
+            f"{response.status_code} {response.reason} for {method} {path}"
+            + (f" | body: {detail}" if detail else ""),
+            response=response,
+        )
     if not response.content:
         return {}
     return response.json()
@@ -543,74 +554,43 @@ def prepare_folder_upload_payload(
     hash_failures: list[dict[str, str]] = []
     classifications = {"new": 0, "updated": 0, "audit_duplicate": 0}
     for source in candidate_files:
-        try:
-            content_sha256 = file_sha256(source)
-        except OSError as exc:
-            failure = {"path": str(source), "error": str(exc)}
-            hash_failures.append(failure)
-            log("error", f"Arquivo nao pode ser assinado para comparacao: {source.name}", automation_id=automation_id, metadata=local_report_metadata("file_signature_failed", failure))
-            continue
         source_key = normalized_source_key(source)
         prior_entry = baseline.get(source_key)
-        # --- dedup persistente entre execucoes agendadas ---
-        # prior_entry e None  -> arquivo nunca processado (new)
-        # prior_entry["hashes"] contem o sha256 atual -> conteudo identico (unchanged)
-        # prior_entry["hashes"] vazio (registro legado sem sha256) -> fallback por mtime:
-        #   se mtime do arquivo no disco <= last_ts do upload anterior, nao houve alteracao
-        #   (unchanged); caso contrario, arquivo foi modificado apos o upload (updated).
+
+        # Deteccao SOMENTE por data de modificacao (mtime) -- NAO le/hasheia o conteudo.
+        # E o criterio do fluxo: nas execucoes seguintes, atualizacoes sao identificadas pela
+        # data de modificacao do arquivo. Vantagens:
+        #   - nao baixa arquivos "somente na nuvem" (OneDrive) so para comparar conteudo;
+        #   - sem content_sha256 nao ha dedup por conteudo -- era ele que fazia dois arquivos
+        #     de mesmo conteudo em lotes diferentes virarem o MESMO file_id, quebrando o
+        #     checkpoint do batch-complete ("arquivo pertence a outro lote").
+        # Classificacao:
+        #   - fora do baseline               -> novo
+        #   - mtime > last_ts (ou sem mtime) -> atualizado
+        #   - mtime <= last_ts               -> inalterado (ignora, salvo Execucao Completa)
+        #   - baseline sem last_ts           -> assume inalterado (sem referencia p/ comparar)
         unchanged = False
-        if prior_entry is not None:
-            prior_hashes = prior_entry["hashes"]
-            if prior_hashes:
-                # Comparacao de conteudo exata (caminho principal)
-                unchanged = content_sha256 in prior_hashes
+        prior_known = prior_entry is not None
+        if prior_known:
+            last_ts = prior_entry.get("last_ts")
+            if last_ts is None:
+                unchanged = True
             else:
-                # Fallback por mtime para registros legados sem sha256 armazenado
-                last_ts = prior_entry.get("last_ts")
-                if last_ts is not None:
-                    try:
-                        file_mtime = source.stat().st_mtime
-                        unchanged = file_mtime <= last_ts
-                        if not unchanged:
-                            log(
-                                "info",
-                                f"Arquivo modificado apos ultimo upload (mtime fallback): {source.name}",
-                                automation_id=automation_id,
-                                metadata={
-                                    "original_path": str(source),
-                                    "file_mtime": file_mtime,
-                                    "last_upload_ts": last_ts,
-                                },
-                            )
-                    except OSError:
-                        # Nao conseguiu ler mtime; trata como modificado (conservador)
-                        unchanged = False
-                else:
-                    # Sem sha256 e sem timestamp: nao ha como confirmar que e o mesmo
-                    # conteudo. Trata como inalterado para evitar reenvio redundante de
-                    # registros antigos sem metadados suficientes.
+                try:
+                    file_mtime = source.stat().st_mtime
+                except OSError:
+                    file_mtime = None  # sem mtime confiavel -> trata como modificado (reenvia)
+                if file_mtime is not None and file_mtime <= last_ts:
                     unchanged = True
-                    log(
-                        "info",
-                        f"Arquivo com registro anterior sem hash nem timestamp; assumindo inalterado: {source.name}",
-                        automation_id=automation_id,
-                        metadata={"original_path": str(source), "content_sha256": content_sha256},
-                    )
-        # ---------------------------------------------------
+
         if unchanged and not full_execution:
             skipped_unchanged.append(str(source))
-            log(
-                "info",
-                f"Arquivo sem alteracao ignorado: {source.name}",
-                automation_id=automation_id,
-                metadata={"original_path": str(source), "content_sha256": content_sha256},
-            )
             continue
-        prior_known = prior_entry is not None
+
         classification = "audit_duplicate" if unchanged else ("updated" if prior_known else "new")
         classifications[classification] += 1
         selected_files.append(source)
-        source_metadata[source_key] = {"content_sha256": content_sha256, "classification": classification}
+        source_metadata[source_key] = {"content_sha256": None, "classification": classification}
     scan_stats.update(
         {
             "full_execution": full_execution,
