@@ -22,7 +22,7 @@ from app.services.automation_staging import (
     normalize_folder_path,
     scan_monitored_folder,
 )
-from app.services.playwright.errors import ManualReviewRequired, UnsupportedFormat
+from app.services.playwright.errors import ManualReviewRequired, PlaygroundLoginRequired, UnsupportedFormat
 from app.services.playwright.browser import session_dir_for_user
 from app.services.playwright.playground_login import connect_playground_session
 from app.services.playwright.playground_monitor import monitor_workspace_files_status
@@ -849,6 +849,11 @@ def process_upload(session: requests.Session, task: dict[str, Any], payload: dic
             return
         log("info", "Upload concluido; monitoramento foi enfileirado por lote confirmado.", automation_id=automation_id)
     except Exception as upload_exc:
+        # Login manual necessario em modo headless: NAO marca os arquivos ainda. O sinal precisa
+        # subir intacto para process_task reabrir o Chromium visivel e REPETIR a tarefa; marcar
+        # aqui deixaria os arquivos como erro/manual_review indevidamente antes do retry.
+        if isinstance(upload_exc, PlaygroundLoginRequired):
+            raise
         # FIX (MEDIUM): Previne registros zumbis no banco. Se a task falhou, os arquivos ainda
         # "pending" (nao enviados) nao podem ficar num limbo. Quando a causa e ManualReviewRequired
         # (ex.: checkpoint de um lote nao confirmou -> os lotes POSTERIORES nunca chegaram a ser
@@ -1245,6 +1250,30 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
     complete_task(session, task_id, result)
 
 
+def _dispatch_task_body(
+    session: requests.Session,
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    user_id: Optional[int],
+    log,
+    task_type: Optional[str],
+) -> None:
+    """Roteia a task para o process_* correspondente. Isolado do process_task para permitir o
+    retry headed (repetir o corpo com payload {headless: False}) sem duplicar o if/elif."""
+    if task_type == "connect_playground_session":
+        process_connect(session, task, payload, user_id, log)
+    elif task_type == "create_playground_workspace":
+        process_workspace_create(session, task, payload, user_id, log)
+    elif task_type == "add_playground_user_to_workspace":
+        process_add_user(session, task, payload, user_id, log)
+    elif task_type == "upload_files_to_workspace":
+        process_upload(session, task, payload, user_id, log)
+    elif task_type == "monitor_workspace_files_status":
+        process_monitor(session, task, payload, user_id, log)
+    elif task_type == "convert_and_retry_file":
+        process_convert_retry(session, task, payload, user_id, log)
+
+
 def process_task(session: requests.Session, task: dict[str, Any], agent_id: Optional[int]) -> None:
     task_id = task["id"]
     task_type = task.get("task_type")
@@ -1264,18 +1293,18 @@ def process_task(session: requests.Session, task: dict[str, Any], agent_id: Opti
 
     try:
         post_json(session, f"/api/agents/tasks/{task_id}/start", {"agent_id": agent_id})
-        if task_type == "connect_playground_session":
-            process_connect(session, task, payload, user_id, log)
-        elif task_type == "create_playground_workspace":
-            process_workspace_create(session, task, payload, user_id, log)
-        elif task_type == "add_playground_user_to_workspace":
-            process_add_user(session, task, payload, user_id, log)
-        elif task_type == "upload_files_to_workspace":
-            process_upload(session, task, payload, user_id, log)
-        elif task_type == "monitor_workspace_files_status":
-            process_monitor(session, task, payload, user_id, log)
-        elif task_type == "convert_and_retry_file":
-            process_convert_retry(session, task, payload, user_id, log)
+        try:
+            _dispatch_task_body(session, task, payload, user_id, log, task_type)
+        except PlaygroundLoginRequired:
+            if not payload.get("headless"):
+                raise  # ja visivel e login nao concluido -> trata como antes (falha)
+            log(
+                "warning",
+                "Login necessario e o navegador estava em modo headless. Reabrindo o Chromium de "
+                "forma VISIVEL para login manual e repetindo a tarefa (a tarefa NAO sera finalizada).",
+            )
+            payload = {**payload, "headless": False}
+            _dispatch_task_body(session, task, payload, user_id, log, task_type)
         log("info", "Task finalizada pelo agente.")
     except AutomationStopped as exc:
         message = str(exc) or "Automacao parada pelo usuario."

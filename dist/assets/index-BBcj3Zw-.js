@@ -693,6 +693,11 @@ function sW({performance:e}){const[t,n]=x.useState("automation"),[r,l]=x.useStat
                 className:"rounded-lg border border-zinc-200 px-2 py-1 text-xs dark:border-white/10 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/5 transition",
                 children:"Logs"
             }),
+            h.jsx("button",{
+                onClick:()=>t("folder"),
+                className:"rounded-lg border border-zinc-200 px-2 py-1 text-xs dark:border-white/10 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/5 transition",
+                children: isEn ? "Folder" : "Pasta"
+            }),
             isError ? h.jsx("button",{
                 onClick:()=>t("reprocess"),
                 className:"rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition",
@@ -738,6 +743,12 @@ function sW({performance:e}){const[t,n]=x.useState("automation"),[r,l]=x.useStat
             } catch(err) {
                 alert(isEn ? "Error queuing files: " + err.message : "Erro ao reprocessar arquivos: " + err.message);
             }
+        }
+    } else if (type === "folder") {
+        try {
+            await Oe(`/api/files/${P.id}/open-folder`, kt("POST", {}));
+        } catch(err) {
+            alert(isEn ? "Error opening folder: " + err.message : "Erro ao abrir a pasta: " + err.message);
         }
     } else {
         setSelectedFile(P);

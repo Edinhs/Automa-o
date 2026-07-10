@@ -13,7 +13,11 @@ from app.services.playwright.browser import (
     page_text,
     safe_error_screenshot,
 )
-from app.services.playwright.errors import PlaygroundConfigurationError, PlaygroundLoginTimeout
+from app.services.playwright.errors import (
+    PlaygroundConfigurationError,
+    PlaygroundLoginRequired,
+    PlaygroundLoginTimeout,
+)
 from app.services.playwright.selectors import (
     LOGGED_IN_TEXTS,
     LOGIN_TEXTS,
@@ -155,6 +159,13 @@ def ensure_logged_in(
         return True
     click_stellantis_login_if_visible(page, log)
     fill_network_id_if_possible(page, payload, log)
+    # Se ainda nao logou e o navegador esta headless (invisivel), nao adianta esperar o login
+    # manual: sinaliza para o agente reabrir o Chromium de forma VISIVEL e repetir a tarefa.
+    if not is_logged_in(page) and bool(payload.get("headless")):
+        raise PlaygroundLoginRequired(
+            "Login manual necessario, mas o navegador esta em modo headless (invisivel). "
+            "Reabrindo o Chromium de forma visivel para o login."
+        )
     wait_for_login_completion(page, log, payload.get("manual_login_timeout_minutes"), should_continue)
     return False
 
@@ -189,6 +200,12 @@ def connect_playground_session(
         else:
             click_stellantis_login_if_visible(page, log)
             fill_network_id_if_possible(page, payload, log)
+            # Mesma logica de ensure_logged_in: headless + nao logado -> sinaliza retry visivel.
+            if not is_logged_in(page) and bool(payload.get("headless")):
+                raise PlaygroundLoginRequired(
+                    "Login manual necessario, mas o navegador esta em modo headless (invisivel). "
+                    "Reabrindo o Chromium de forma visivel para o login."
+                )
             wait_for_login_completion(page, log, payload.get("manual_login_timeout_minutes"), should_continue)
 
         log("info", "Sessao salva.")

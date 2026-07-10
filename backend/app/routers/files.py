@@ -434,6 +434,63 @@ def get_file(id: int, db: Session = Depends(get_db)):
     return file_out(f)
 
 
+@router.post("/{id}/open-folder")
+def open_file_folder(id: int, db: Session = Depends(get_db)):
+    """Abre a pasta do arquivo no Windows Explorer do host local.
+
+    Prioriza `original_path` (seleciona o arquivo no Explorer); caso ausente,
+    usa o `folder_path` da automacao vinculada (apenas abre a pasta).
+    """
+    import os
+    import sys
+    import subprocess
+
+    f = db.query(WorkspaceFile).filter(WorkspaceFile.id == id).first()
+    if not f:
+        raise HTTPException(404, "File not found")
+
+    candidate = None
+    select_in_explorer = False
+
+    if f.original_path and f.original_path not in ("", "-"):
+        candidate = f.original_path
+        select_in_explorer = True
+    elif f.automation_id:
+        from app.models.automation import Automation
+        automation = (
+            db.query(Automation)
+            .filter(Automation.id == f.automation_id, Automation.is_deleted == False)
+            .first()
+        )
+        if automation and automation.folder_path:
+            candidate = automation.folder_path
+
+    if not candidate:
+        raise HTTPException(400, "Nenhum caminho de pasta disponível para este arquivo.")
+
+    norm = os.path.normpath(candidate)
+
+    if sys.platform != "win32":
+        raise HTTPException(400, f"Abrir pasta só é suportado no host Windows. Caminho: {norm}")
+
+    try:
+        if select_in_explorer and os.path.isfile(norm):
+            # explorer.exe retorna código de saída != 0 mesmo em sucesso: use Popen
+            # (fire-and-forget) e NÃO cheque returncode.
+            subprocess.Popen(f'explorer /select,"{norm}"')
+        else:
+            folder = norm if os.path.isdir(norm) else os.path.dirname(norm)
+            if not os.path.isdir(folder):
+                raise HTTPException(400, f"Pasta não encontrada: {norm}")
+            os.startfile(folder)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Falha ao abrir a pasta: {exc}")
+
+    return {"opened": True, "path": norm}
+
+
 @router.put("/{id}")
 def update_file(id: int, data: dict, db: Session = Depends(get_db)):
     f = db.query(WorkspaceFile).filter(WorkspaceFile.id == id, WorkspaceFile.is_deleted == False).first()
