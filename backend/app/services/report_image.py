@@ -24,6 +24,8 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from app.core.report_i18n import poster_labels
+
 # Paleta / dimensoes do poster (fiel a identidade Stellantis).
 CARD_WIDTH = 1496
 VIEWPORT = {"width": 1536, "height": 1120}
@@ -152,24 +154,30 @@ def _svg_line_chart(series: list[dict[str, Any]], width: int = 560, height: int 
 
 
 def build_report_image_html(data: dict[str, Any]) -> str:
-    """Monta o HTML do poster-convite a partir dos dados de compute_card_image_data."""
+    """Monta o HTML do poster-convite a partir dos dados de compute_card_image_data.
+
+    Os rotulos fixos do poster vem de `data["labels"]` (injetados por compute_card_image_data no
+    idioma escolhido). Quando ausentes (ex.: dados montados a mao em testes), caem no dicionario
+    PT de report_i18n -> saida em portugues identica ao comportamento historico.
+    """
     hours = data.get("hours", {}) or {}
     adoption = data.get("adoption", {}) or {}
     health = data.get("health", {}) or {}
     chart = _svg_line_chart(data.get("hours_series", []))
+    L = {**poster_labels("pt"), **(data.get("labels") or {})}
+    lang_attr = str(L.get("lang") or "pt-br")
 
     health_items = int(health.get("items", 0) or 0)
     if health_items > 0:
         eta = str(health.get("eta", "")).strip()
-        eta_txt = f" — previsão de correção {eta}" if eta else ""
+        eta_txt = L["health_eta_prefix"].format(eta=eta) if eta else ""
         health_html = (
             f'<div class="health warn"><span class="dot"></span>'
-            f'⚠️ {health_items} item(ns) em tratamento{escape(eta_txt)}. Já estamos resolvendo.</div>'
+            f'{escape(L["health_warn"].format(items=health_items, eta=eta_txt))}</div>'
         )
     else:
         health_html = (
-            '<div class="health ok"><span class="dot"></span>'
-            '✅ Tudo certo — nenhum item em tratamento nesta semana.</div>'
+            f'<div class="health ok"><span class="dot"></span>{escape(L["health_ok"])}</div>'
         )
 
     body = f"""
@@ -185,45 +193,45 @@ def build_report_image_html(data: dict[str, Any]) -> str:
       <div class="wordmark">STELLANTIS</div>
       <div class="gen-chip">
         <div class="ic">📅</div>
-        <div class="txt">Relatório gerado em<br><b>{escape(str(data.get("generated_at", "")))}</b></div>
+        <div class="txt">{L["gen_prefix"]}<br><b>{escape(str(data.get("generated_at", "")))}</b></div>
       </div>
     </div>
   </div>
 
   <div class="hero">
-    <span class="hero-badge">Convite</span>
+    <span class="hero-badge">{L["badge"]}</span>
     <h1>{escape(str(data.get("headline", "Seu ambiente já está pronto — entre e crie seu agente")))}</h1>
     <p>{escape(str(data.get("invite_body", "")))}</p>
     <div class="access">{escape(str(data.get("access_line", "")))}</div>
     <div class="cta">
-      <div class="btn solid">🌐 Abrir Playground</div>
-      <div class="btn ghost">📄 Baixar Relatório (PDF)</div>
+      <div class="btn solid">{L["cta_playground"]}</div>
+      <div class="btn ghost">{L["cta_download"]}</div>
     </div>
   </div>
 
   <div class="proof">
     <div class="panel">
-      <h3><span class="ic">⏱️</span> Tempo devolvido ao time</h3>
+      <h3><span class="ic">⏱️</span> {L["proof_title"]}</h3>
       <div class="hours-grid">
-        <div class="hstat week"><div class="num">{escape(str(hours.get("week", "0 h")))}</div><div class="lbl">Esta semana</div></div>
-        <div class="hstat"><div class="num">{escape(str(hours.get("total", "0 h")))}</div><div class="lbl">Acumulado</div></div>
+        <div class="hstat week"><div class="num">{escape(str(hours.get("week", "0 h")))}</div><div class="lbl">{L["this_week"]}</div></div>
+        <div class="hstat"><div class="num">{escape(str(hours.get("total", "0 h")))}</div><div class="lbl">{L["total"]}</div></div>
       </div>
-      <div class="proof-note">Cada arquivo preparado é setup que ninguém precisou fazer à mão — baixar a SPEC, subir no workspace seguro e montar o ambiente. Isso já vem pronto.</div>
+      <div class="proof-note">{L["proof_note"]}</div>
     </div>
     <div class="panel">
-      <h3><span class="ic">📈</span> Evolução do tempo devolvido</h3>
-      <div class="chart"><div class="ct">Horas economizadas (acumulado, últimos 7 dias)</div>{chart}</div>
+      <h3><span class="ic">📈</span> {L["chart_title"]}</h3>
+      <div class="chart"><div class="ct">{L["chart_sub"]}</div>{chart}</div>
     </div>
   </div>
 
   <div class="adopt">
     <div class="astat">
       <div class="ic">👥</div>
-      <div><div class="num">{escape(str(adoption.get("engineers", 0)))}</div><div class="lbl">Engenheiros já usando</div></div>
+      <div><div class="num">{escape(str(adoption.get("engineers", 0)))}</div><div class="lbl">{L["engineers"]}</div></div>
     </div>
     <div class="astat">
       <div class="ic">📋</div>
-      <div><div class="num">{escape(str(adoption.get("specs_ready", 0)))}</div><div class="lbl">SPECs prontas no ambiente</div></div>
+      <div><div class="num">{escape(str(adoption.get("specs_ready", 0)))}</div><div class="lbl">{L["specs"]}</div></div>
     </div>
   </div>
 
@@ -231,12 +239,12 @@ def build_report_image_html(data: dict[str, Any]) -> str:
 
   <div class="footer">
     <div class="fic">🚀</div>
-    <div>Stellantis GenAI Playground — mais produtividade, menos retrabalho.<br>Entre e crie seu agente direto no workspace do seu projeto.</div>
+    <div>{L["footer"]}</div>
     <div class="fword">STELLANTIS</div>
   </div>
 </div>
 """
-    return f'<!doctype html><html lang="pt-br"><head><meta charset="utf-8">{_CSS}</head><body>{body}</body></html>'
+    return f'<!doctype html><html lang="{lang_attr}"><head><meta charset="utf-8">{_CSS}</head><body>{body}</body></html>'
 
 
 def render_report_image_png(html: str, out_path: str | Path, *, timeout_ms: int = 20000) -> Path | None:

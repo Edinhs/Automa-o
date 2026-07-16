@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -253,6 +255,65 @@ class GraphClient:
                 "content": content,
             }
         }
+        return self.request(
+            "POST",
+            f"teams/{team_id}/channels/{channel_id}/messages",
+            json_payload=graph_payload,
+            expected_status=(201,),
+            api_version="beta",
+        )
+
+    def send_channel_message_with_image_card(
+        self,
+        *,
+        team_id: str | None = None,
+        channel_id: str | None = None,
+        image_bytes: bytes,
+        image_content_type: str = "image/png",
+        adaptive_card: dict[str, Any] | None = None,
+        caption_html: str = "",
+    ) -> GraphResult:
+        """Posta 1 mensagem no canal do Teams com a imagem EMBUTIDA via `hostedContents` e,
+        opcionalmente, um Adaptive Card (os botoes) logo abaixo, na mesma mensagem.
+
+        Diferenca para `send_channel_message` / o fluxo do Power Automate (GUIA_POWER_AUTOMATE.md,
+        Parte I): aqui os BYTES do PNG viajam dentro da propria chamada ao Graph -- sem depender de
+        link de compartilhamento do OneDrive (`Create share link` + `&download=1`), sem risco de
+        bloqueio por politica de DLP e sem o comportamento "nao documentado" citado no guia.
+        Limite oficial do hostedContents: 4 MB por item (Microsoft Graph). So funciona para CANAIS
+        de Equipe (credencial de aplicativo) -- nao serve para chats 1:1/grupo, que exigem login
+        delegado de usuario ou um Bot.
+        """
+        team_id = str(team_id or getattr(self.config, "MS_GRAPH_TEAMS_TEAM_ID", "") or "").strip()
+        channel_id = str(channel_id or getattr(self.config, "MS_GRAPH_TEAMS_CHANNEL_ID", "") or "").strip()
+        if not team_id or not channel_id:
+            raise GraphConfigurationError(
+                ["MS_GRAPH_TEAMS_TEAM_ID", "MS_GRAPH_TEAMS_CHANNEL_ID"],
+                "Imagem no Teams via Graph exige team_id e channel_id.",
+            )
+        if not image_bytes:
+            raise GraphIntegrationError("Imagem vazia.", status_code=422, code="validation_error")
+
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        content_html = f'{caption_html}<img src="../hostedContents/1/$value" style="max-width:100%">'
+        hosted_contents: list[dict[str, Any]] = [{
+            "@microsoft.graph.temporaryId": "1",
+            "contentBytes": image_b64,
+            "contentType": image_content_type,
+        }]
+
+        graph_payload: dict[str, Any] = {
+            "body": {"contentType": "html", "content": content_html},
+            "hostedContents": hosted_contents,
+        }
+        if adaptive_card:
+            graph_payload["body"]["content"] += '<attachment id="card1"></attachment>'
+            graph_payload["attachments"] = [{
+                "id": "card1",
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": json.dumps(adaptive_card, ensure_ascii=False),
+            }]
+
         return self.request(
             "POST",
             f"teams/{team_id}/channels/{channel_id}/messages",

@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.report_i18n import normalize_language
 from app.core.timezone import now_sao_paulo_naive, sao_paulo_local_iso, sao_paulo_utc_iso, to_sao_paulo_naive
 from app.db.session import get_db
 from app.models.automation import Automation
@@ -40,6 +41,7 @@ SCHEDULE_FIELDS = {
     "status",
     "report_type",
     "report_format",
+    "report_language",
     "deliver_to_folder",
 }
 
@@ -91,6 +93,8 @@ def schedule_payload(data: dict) -> dict:
         clean["status"] = normalize_status(clean.get("status"))
     if "deliver_to_folder" in clean:
         clean["deliver_to_folder"] = _as_bool(clean.get("deliver_to_folder"))
+    if "report_language" in clean:
+        clean["report_language"] = normalize_language(clean.get("report_language"))
     return clean
 
 
@@ -174,6 +178,7 @@ def schedule_out(schedule: Schedule, db: Session) -> dict:
         "updated_at": sao_paulo_utc_iso(schedule.updated_at),
         "report_type": schedule.report_type,
         "report_format": schedule.report_format,
+        "report_language": normalize_language(getattr(schedule, "report_language", None)),
         "deliver_to_folder": bool(schedule.deliver_to_folder),
     }
 

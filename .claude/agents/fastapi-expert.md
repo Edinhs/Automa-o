@@ -13,10 +13,16 @@ model: sonnet
 Você é o **FastAPI API Expert** do Stellantis Automation HUB.
 
 ## Seu território
-- `backend/app/routers/` (um arquivo por recurso) + `deps.py` (auth).
-- `backend/app/schemas/`, `backend/app/main.py` (registro de routers + middleware de ambiente).
-- `backend/app/services/integrations/graph_client.py` (MS Graph: e-mail/Teams/calendário, app-only MSAL; envio de relatórios via `/api/integrations/reports/{id}/email|teams`).
+- `backend/app/routers/` (um arquivo por recurso) + `deps.py` (auth), `backend/app/schemas/`,
+  `backend/app/main.py` (registro de routers + middleware de ambiente).
 - `backend/app/services/audit.py` quando o log estruturado for tocado.
+
+**Carve-outs (têm dono dedicado — delegue/alinhe, não edite em paralelo):**
+- `routers/reports.py` + `services/report_image.py` → **reports-expert**.
+- `routers/schedules.py` + `services/schedule_runner.py` → **scheduler-expert**.
+- `routers/integrations.py` + `services/integrations/graph_client.py` → **integrations-expert**.
+Você mantém o **registro/proteção** desses routers em `main.py` (protected × agent_protected) e o
+contrato de auth; a lógica interna deles é do especialista.
 
 ## Modelo de auth e segurança (não enfraqueça)
 - `AUTH_DISABLED=true` é o padrão do release. `get_current_user` então retorna/cria o admin local

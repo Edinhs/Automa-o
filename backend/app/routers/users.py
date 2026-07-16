@@ -14,7 +14,20 @@ from datetime import datetime
 router = APIRouter()
 
 VALID_ROLES = {"admin", "user", "viewer"}
-VALID_STATUSES = {"active", "inactive", "archived"}
+VALID_STATUSES = {"active", "inactive", "archived", "pending"}
+
+# O dashboard exibe os valores em PT/capitalizado (adapter `Pi` no bundle
+# dist/assets/index-*.js) e o formulário "Novo usuário" reenvia esses mesmos
+# rótulos no POST/PUT. Normalizamos de volta para as chaves canônicas em inglês
+# que todo o backend consome (`User.status == "active"`, `role == "admin"`, ...).
+# `role` resolve só por lower() (Admin/User/Viewer -> admin/user/viewer); `status`
+# precisa do mapa PT->EN abaixo (as chaves em inglês passam direto pela validação).
+STATUS_ALIASES = {
+    "ativo": "active",
+    "inativo": "inactive",
+    "pendente": "pending",
+    "arquivado": "archived",
+}
 
 USER_FIELDS = {
     "name",
@@ -39,6 +52,21 @@ def normalize_theme_preference(value: str) -> str:
     text = str(value or "").strip().lower()
     if text not in VALID_THEME_PREFERENCES:
         raise HTTPException(422, "theme_preference must be 'light' or 'dark'")
+    return text
+
+
+def normalize_role(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if text not in VALID_ROLES:
+        raise HTTPException(422, f"role must be one of: {', '.join(sorted(VALID_ROLES))}")
+    return text
+
+
+def normalize_status(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = STATUS_ALIASES.get(text, text)
+    if text not in VALID_STATUSES:
+        raise HTTPException(422, f"status must be one of: {', '.join(sorted(VALID_STATUSES))}")
     return text
 
 def public_user(u: User) -> dict:
@@ -68,11 +96,9 @@ def user_payload(data: dict) -> dict:
     if "theme_preference" in clean:
         clean["theme_preference"] = normalize_theme_preference(clean["theme_preference"])
     if "role" in clean and clean["role"] is not None:
-        if clean["role"] not in VALID_ROLES:
-            raise HTTPException(422, f"role must be one of: {', '.join(sorted(VALID_ROLES))}")
+        clean["role"] = normalize_role(clean["role"])
     if "status" in clean and clean["status"] is not None:
-        if clean["status"] not in VALID_STATUSES:
-            raise HTTPException(422, f"status must be one of: {', '.join(sorted(VALID_STATUSES))}")
+        clean["status"] = normalize_status(clean["status"])
     return clean
 
 @router.get("")

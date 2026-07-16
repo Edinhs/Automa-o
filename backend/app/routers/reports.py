@@ -15,6 +15,21 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import report_delivery_dir, runtime_path, settings
+from app.core.report_i18n import (
+    DEFAULT_LANGUAGE,
+    card_strings,
+    misc_string,
+    normalize_language,
+    poster_labels,
+    poster_strings,
+    report_block_title,
+    report_headers,
+    report_type_label,
+    simplificado_observation,
+    simplificado_status,
+    summary_labels,
+)
+from app.core.report_i18n import status_label as i18n_status_label
 from app.core.timezone import app_timezone, now_sao_paulo_naive, sao_paulo_utc_iso, to_sao_paulo_naive
 from app.db.session import get_db
 from app.models.automation import Automation
@@ -25,7 +40,6 @@ from app.models.agent import AgentTask
 from app.models.schedule import Schedule
 from app.routers.executions import (
     STATUS_FILTERS,
-    STATUS_LABELS,
     files_for_task,
     file_status_counts,
     finished_at,
@@ -232,7 +246,7 @@ def reportable_automation_ids(db: Session) -> set[int]:
     }
 
 
-def block_files(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_files(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     automation_names, workspace_names = names
     permitted_automations = reportable_automation_ids(db)
     query = db.query(WorkspaceFile).filter(
@@ -271,13 +285,13 @@ def block_files(db: Session, filters: dict[str, Any], names: tuple[dict[int, str
         ])
     return ReportSection(
         "files",
-        REPORT_BLOCKS["files"],
-        ["ID", "Nome", "Automacao", "Workspace", "Classificacao", "Extensao", "Tamanho", "Caminho original", "Detectado em", "Ciclo"],
+        report_block_title("files", language),
+        report_headers("files", language),
         rows,
     )
 
 
-def block_local_errors(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_local_errors(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     automation_names, _ = names
     permitted_automations = reportable_automation_ids(db)
     query = db.query(ExecutionLog).filter(ExecutionLog.level == "error")
@@ -308,13 +322,13 @@ def block_local_errors(db: Session, filters: dict[str, Any], names: tuple[dict[i
         ])
     return ReportSection(
         "local_errors",
-        REPORT_BLOCKS["local_errors"],
-        ["ID", "Evento", "Automacao", "Ciclo", "Mensagem", "Data", "Detalhes"],
+        report_block_title("local_errors", language),
+        report_headers("local_errors", language),
         rows,
     )
 
 
-def block_automations(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_automations(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     _, workspace_names = names
     query = db.query(Automation).filter(Automation.is_deleted == False)
     if filters["automation_id"]:
@@ -333,10 +347,10 @@ def block_automations(db: Session, filters: dict[str, Any], names: tuple[dict[in
             item.temp_folder_path or "",
             fmt_utc(item.created_at),
         ])
-    return ReportSection("automations", REPORT_BLOCKS["automations"], ["ID", "Nome", "Descrição", "Tipo", "Status", "Pasta Monitorada", "Pasta Temporária", "Criada em"], rows)
+    return ReportSection("automations", report_block_title("automations", language), report_headers("automations", language), rows)
 
 
-def block_updated_files(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_updated_files(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     automation_names, workspace_names = names
     permitted_automations = reportable_automation_ids(db)
     query = db.query(WorkspaceFile).filter(
@@ -370,10 +384,10 @@ def block_updated_files(db: Session, filters: dict[str, Any], names: tuple[dict[
             fmt_utc(event_date),
             item.detection_task_id,
         ])
-    return ReportSection("updated_files", REPORT_BLOCKS["updated_files"], ["ID", "Nome", "Automação", "Workspace", "Classificação", "Extensão", "Tamanho", "Caminho original", "Detectado em", "Ciclo"], rows)
+    return ReportSection("updated_files", report_block_title("updated_files", language), report_headers("updated_files", language), rows)
 
 
-def block_workspaces(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_workspaces(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     query = db.query(Workspace).filter(Workspace.is_deleted == False)
     if filters["workspace_id"]:
         query = query.filter(Workspace.id == filters["workspace_id"])
@@ -393,10 +407,10 @@ def block_workspaces(db: Session, filters: dict[str, Any], names: tuple[dict[int
             item.created_via or "",
             fmt_utc(item.created_at),
         ])
-    return ReportSection("workspaces", REPORT_BLOCKS["workspaces"], ["ID", "Nome", "Descrição", "Playground ID", "Playground URL", "Embedding Model", "Data Languages", "Status", "Criado Via", "Criado em"], rows)
+    return ReportSection("workspaces", report_block_title("workspaces", language), report_headers("workspaces", language), rows)
 
 
-def block_schedules(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_schedules(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     automation_names, _ = names
     query = db.query(Schedule).filter(Schedule.is_deleted == False)
     if filters["automation_id"]:
@@ -418,10 +432,10 @@ def block_schedules(db: Session, filters: dict[str, Any], names: tuple[dict[int,
             item.status or "",
             fmt_utc(item.created_at),
         ])
-    return ReportSection("schedules", REPORT_BLOCKS["schedules"], ["ID", "Nome", "Automação", "Frequência", "Hora", "Dias da Semana", "Dia do Mês", "Próxima Execução", "Última Execução", "Status", "Criado em"], rows)
+    return ReportSection("schedules", report_block_title("schedules", language), report_headers("schedules", language), rows)
 
 
-def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     automation_names, workspace_names = names
     # Uma "execucao" = 1 INICIALIZACAO da automacao (nao 1 task). As tasks satelites do mesmo run
     # (o reenvio de PDF pos-monitoramento, que tambem e upload_files_to_workspace e carrega
@@ -482,7 +496,7 @@ def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int
         )
         end = group_finished or datetime.utcnow()
         duration = max(int((end - group_started).total_seconds()), 0) if group_started else 0
-        status_label = STATUS_LABELS.get(status_key, status_key)
+        status_label = i18n_status_label(status_key, language)
 
         rows.append([
             root.id,
@@ -499,13 +513,13 @@ def block_executions(db: Session, filters: dict[str, Any], names: tuple[dict[int
         ])
     return ReportSection(
         "executions",
-        REPORT_BLOCKS["executions"],
-        ["ID", "Tipo de Tarefa", "Automação", "Workspace", "Início", "Fim", "Duração (s)", "Total de Arquivos", "Sucessos", "Erros", "Status"],
+        report_block_title("executions", language),
+        report_headers("executions", language),
         rows,
     )
 
 
-def block_simplificado(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]]) -> ReportSection:
+def block_simplificado(db: Session, filters: dict[str, Any], names: tuple[dict[int, str], dict[int, str]], language: str = DEFAULT_LANGUAGE) -> ReportSection:
     query = db.query(Workspace).filter(Workspace.is_deleted == False)
     if filters["workspace_id"]:
         query = query.filter(Workspace.id == filters["workspace_id"])
@@ -538,35 +552,38 @@ def block_simplificado(db: Session, filters: dict[str, Any], names: tuple[dict[i
         def is_sent(f: WorkspaceFile) -> bool:
             return (f.status or "").lower() in {"uploaded", "ready"}
 
+        # status_key e um TOKEN canonico (COMPLETO/PROGRESSO/ERRO); a regra de negocio do card
+        # (compute_card_business / build_card_summary) le esse token em pt. O valor exibido na linha
+        # e localizado (idem OBSERVAÇÃO) sem alterar o token canonico.
         if total == 0:
-            percentage, status, observation = "10%", "PROGRESSO", "WORKSPACE CRIADO"
+            percentage, status_key, obs_key = "10%", "PROGRESSO", "created"
         else:
             all_ready = all(is_ready(f) for f in files)
             any_error = any(is_error(f) for f in files)
             if any_error and not all_ready:
-                percentage, status, observation = "90%", "ERRO", "Tratamento de erros"
+                percentage, status_key, obs_key = "90%", "ERRO", "error_handling"
             elif all_ready:
-                percentage, status, observation = "100%", "COMPLETO", "Disponivel no Playground"
+                percentage, status_key, obs_key = "100%", "COMPLETO", "available"
             elif all(is_sent(f) for f in files):
-                percentage, status, observation = "70%", "PROGRESSO", "Arquivos enviados"
+                percentage, status_key, obs_key = "70%", "PROGRESSO", "files_sent"
             elif any(is_sent(f) for f in files):
-                percentage, status, observation = "40%", "PROGRESSO", "Enviando para Playground"
+                percentage, status_key, obs_key = "40%", "PROGRESSO", "sending"
             else:
-                percentage, status, observation = "40%", "PROGRESSO", "Enviando para Playground"
+                percentage, status_key, obs_key = "40%", "PROGRESSO", "sending"
 
         rows.append([
             ws.name or "",
             percentage,
-            status,
-            observation,
+            simplificado_status(status_key, language),
+            simplificado_observation(obs_key, language),
             fmt_utc(ws.updated_at),
             total,
         ])
 
     return ReportSection(
         "simplificado",
-        REPORT_BLOCKS["simplificado"],
-        ["SPEC", "PORCENTAGEM", "STATUS", "OBSERVAÇÃO", "ULTIMA ATUALIZAÇÃO", "ARQUIVOS"],
+        report_block_title("simplificado", language),
+        report_headers("simplificado", language),
         rows,
     )
 
@@ -583,26 +600,28 @@ BLOCK_BUILDERS = {
 }
 
 
-def build_sections(db: Session, report_type: str, filters: dict[str, Any]) -> list[ReportSection]:
+def build_sections(db: Session, report_type: str, filters: dict[str, Any], language: str = DEFAULT_LANGUAGE) -> list[ReportSection]:
     names = lookup_maps(db)
-    return [BLOCK_BUILDERS[key](db, filters, names) for key in sections_for_type(report_type)]
+    return [BLOCK_BUILDERS[key](db, filters, names, language) for key in sections_for_type(report_type)]
 
 
-def summary_section(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> ReportSection:
+def summary_section(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], language: str = DEFAULT_LANGUAGE) -> ReportSection:
+    lb = summary_labels(language)
+    all_label = lb["all"]
     rows = [
-        ["Tipo", report_type],
-        ["Formato", file_format.upper()],
-        ["Fonte exclusiva", "Monitoramento local da pasta antes da automacao WEB"],
-        ["Data inicial", fmt_utc(filters["start"])],
-        ["Data final", fmt_utc(filters["end"])],
-        ["Automacao", filters["automation_id"] or "Todos"],
-        ["Workspace", filters["workspace_id"] or "Todos"],
-        ["Classificacao", filters["status"] or "Todos"],
-        ["Ciclo", filters["source_task_id"] or "Todos"],
-        ["Gerado em", format_dt(now_sao_paulo_naive())],
+        [lb["type"], report_type_label(report_type, language)],
+        [lb["format"], file_format.upper()],
+        [lb["source"], lb["source_value"]],
+        [lb["date_start"], fmt_utc(filters["start"])],
+        [lb["date_end"], fmt_utc(filters["end"])],
+        [lb["automation"], filters["automation_id"] or all_label],
+        [lb["workspace"], filters["workspace_id"] or all_label],
+        [lb["classification"], filters["status"] or all_label],
+        [lb["cycle"], filters["source_task_id"] or all_label],
+        [lb["generated_at"], format_dt(now_sao_paulo_naive())],
     ]
     rows.extend([[section.title, len(section.rows)] for section in sections])
-    return ReportSection("summary", "Resumo", ["Campo", "Valor"], rows)
+    return ReportSection("summary", lb["title"], list(lb["headers"]), rows)
 
 
 def normalize_cell(value: Any) -> str:
@@ -625,13 +644,13 @@ def safe_sheet_name(value: str, used: set[str]) -> str:
     return name
 
 
-def build_excel(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> bytes:
+def build_excel(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], language: str = DEFAULT_LANGUAGE) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
     wb = Workbook()
     used_names: set[str] = set()
-    all_sections = [summary_section(report_type, file_format, filters, sections), *sections]
+    all_sections = [summary_section(report_type, file_format, filters, sections, language), *sections]
     header_fill = PatternFill("solid", fgColor="1E3A5F")
     header_font = Font(bold=True, color="FFFFFF")
     for index, section in enumerate(all_sections):
@@ -646,7 +665,7 @@ def build_excel(report_type: str, file_format: str, filters: dict[str, Any], sec
             for col_idx, value in enumerate(row, start=1):
                 ws.cell(row=row_idx, column=col_idx, value=normalize_cell(value))
         if not section.rows:
-            ws.cell(row=2, column=1, value="Sem registros para os filtros selecionados.")
+            ws.cell(row=2, column=1, value=misc_string("no_records", language))
         for column in ws.columns:
             max_len = max((len(str(cell.value or "")) for cell in column), default=10)
             ws.column_dimensions[column[0].column_letter].width = min(max(max_len + 4, 12), 70)
@@ -655,11 +674,11 @@ def build_excel(report_type: str, file_format: str, filters: dict[str, Any], sec
     return buf.getvalue()
 
 
-def pdf_table(section: ReportSection, styles):
+def pdf_table(section: ReportSection, styles, language: str = DEFAULT_LANGUAGE):
     from reportlab.lib import colors
     from reportlab.platypus import Paragraph, Table, TableStyle
 
-    data_rows = section.rows or [["Sem registros para os filtros selecionados."] + [""] * (len(section.headers) - 1)]
+    data_rows = section.rows or [[misc_string("no_records", language)] + [""] * (len(section.headers) - 1)]
     table_data = [
         [Paragraph(f"<b>{escape(str(header))}</b>", styles["BodyText"]) for header in section.headers],
         *[[Paragraph(escape(normalize_cell(value)), styles["BodyText"]) for value in row] for row in data_rows[:80]],
@@ -679,7 +698,7 @@ def pdf_table(section: ReportSection, styles):
     return table
 
 
-def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> bytes:
+def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], language: str = DEFAULT_LANGUAGE) -> bytes:
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import cm
@@ -692,9 +711,9 @@ def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], secti
     styles["BodyText"].leading = 7
     elements = [
         Paragraph("<b>Stellantis Automation HUB</b>", styles["Title"]),
-        Paragraph(f"Relatorio: {escape(report_type)}", styles["Heading2"]),
+        Paragraph(escape(misc_string("pdf_report_heading", language).format(type=report_type_label(report_type, language))), styles["Heading2"]),
         Spacer(1, 0.3 * cm),
-        pdf_table(summary_section(report_type, file_format, filters, sections), styles),
+        pdf_table(summary_section(report_type, file_format, filters, sections, language), styles, language),
         Spacer(1, 0.5 * cm),
     ]
     for index, section in enumerate(sections):
@@ -702,19 +721,19 @@ def build_pdf(report_type: str, file_format: str, filters: dict[str, Any], secti
             elements.append(PageBreak())
         elements.append(Paragraph(escape(section.title), styles["Heading2"]))
         elements.append(Spacer(1, 0.2 * cm))
-        elements.append(pdf_table(section, styles))
+        elements.append(pdf_table(section, styles, language))
         if len(section.rows) > 80:
             elements.append(Spacer(1, 0.2 * cm))
-            elements.append(Paragraph(f"Exibindo 80 de {len(section.rows)} registros nesta secao.", styles["Normal"]))
+            elements.append(Paragraph(escape(misc_string("pdf_showing", language).format(n=len(section.rows))), styles["Normal"]))
     doc.build(elements)
     return buf.getvalue()
 
 
-def build_csv(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> str:
+def build_csv(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], language: str = DEFAULT_LANGUAGE) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
     if normalize_key(report_type) == "relatorio geral":
-        for section in [summary_section(report_type, file_format, filters, sections), *sections]:
+        for section in [summary_section(report_type, file_format, filters, sections, language), *sections]:
             writer.writerow([section.title])
             writer.writerow(section.headers)
             writer.writerows(section.rows)
@@ -726,10 +745,11 @@ def build_csv(report_type: str, file_format: str, filters: dict[str, Any], secti
     return buf.getvalue()
 
 
-def build_json(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection]) -> str:
-    all_sections = [summary_section(report_type, file_format, filters, sections), *sections]
+def build_json(report_type: str, file_format: str, filters: dict[str, Any], sections: list[ReportSection], language: str = DEFAULT_LANGUAGE) -> str:
+    all_sections = [summary_section(report_type, file_format, filters, sections, language), *sections]
     payload = {
         "report_type": report_type,
+        "language": language,
         "file_format": file_format,
         "generated_at": now_sao_paulo_naive().isoformat(timespec="seconds"),
         "period": {
@@ -752,24 +772,25 @@ def build_json(report_type: str, file_format: str, filters: dict[str, Any], sect
     return json.dumps(payload, ensure_ascii=False, default=str, indent=2)
 
 
-def build_report_content(report_type: str, file_format: str, filters: dict[str, Any], db: Session) -> bytes:
-    sections = build_sections(db, report_type, filters)
+def build_report_content(report_type: str, file_format: str, filters: dict[str, Any], db: Session, language: str = DEFAULT_LANGUAGE) -> bytes:
+    language = normalize_language(language)
+    sections = build_sections(db, report_type, filters, language)
     if file_format == "xlsx":
-        return build_excel(report_type, file_format, filters, sections)
+        return build_excel(report_type, file_format, filters, sections, language)
     if file_format == "pdf":
-        return build_pdf(report_type, file_format, filters, sections)
+        return build_pdf(report_type, file_format, filters, sections, language)
     if file_format == "json":
-        return build_json(report_type, file_format, filters, sections).encode("utf-8")
-    return build_csv(report_type, file_format, filters, sections).encode("utf-8-sig")
+        return build_json(report_type, file_format, filters, sections, language).encode("utf-8")
+    return build_csv(report_type, file_format, filters, sections, language).encode("utf-8-sig")
 
 
-def write_report_file(report_type: str, file_format: str, filters: dict[str, Any], db: Session, subfolder: str = None) -> Path:
+def write_report_file(report_type: str, file_format: str, filters: dict[str, Any], db: Session, subfolder: str = None, language: str = DEFAULT_LANGUAGE) -> Path:
     reports_dir = runtime_path("REPORTS_PATH")
     if subfolder:
         reports_dir = reports_dir / subfolder
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / report_filename(report_type, file_format)
-    path.write_bytes(build_report_content(report_type, file_format, filters, db))
+    path.write_bytes(build_report_content(report_type, file_format, filters, db, language))
     return path
 
 
@@ -787,6 +808,7 @@ def report_out(rep: ExecutionReport) -> dict[str, Any]:
         "report_type": report_type,
         "type": rep.type,
         "file_format": file_format,
+        "language": normalize_language(getattr(rep, "language", None)),
         "file_path": rep.file_path,
         "status": rep.status,
         "source_scope": rep.source_scope,
@@ -810,9 +832,11 @@ def persist_report(
     generation_trigger: str,
     source_task_id: int | None,
     deliver_to_folder: bool = False,
+    language: str = DEFAULT_LANGUAGE,
 ) -> ExecutionReport:
+    language = normalize_language(language)
     subfolder = "agendados" if generation_trigger == "automatic" else None
-    path = write_report_file(report_type, file_format, filters, db, subfolder=subfolder)
+    path = write_report_file(report_type, file_format, filters, db, subfolder=subfolder, language=language)
     report = ExecutionReport(
         name=f"{report_type} ({file_format.upper()}) - {now_sao_paulo_naive():%d/%m/%Y %H:%M}",
         type=f"{report_type}|{file_format}",
@@ -824,6 +848,7 @@ def persist_report(
         period_start=filters["start"],
         period_end=filters["end"],
         generated_by_id=generated_by_id,
+        language=language,
     )
     db.add(report)
     db.commit()
@@ -879,7 +904,8 @@ def filters_for_report(rep: ExecutionReport) -> dict[str, Any]:
 
 def fallback_content(rep: ExecutionReport, file_format: str, db: Session) -> bytes:
     report_type, _ = report_type_and_format(rep)
-    return build_report_content(report_type, file_format, filters_for_report(rep), db)
+    # Regenera no MESMO idioma persistido do relatorio (re-download/fallback consistente).
+    return build_report_content(report_type, file_format, filters_for_report(rep), db, normalize_language(getattr(rep, "language", None)))
 
 
 CARD_PREVIEW_ROW_LIMIT = 5
@@ -986,14 +1012,19 @@ def compute_card_business(db: Session, now: datetime | None = None) -> dict[str,
     }
 
 
-def compute_card_image_data(db: Session, now: datetime | None = None) -> dict[str, Any]:
+def compute_card_image_data(db: Session, now: datetime | None = None, language: str = DEFAULT_LANGUAGE) -> dict[str, Any]:
     """Dados dinamicos do poster-convite semanal (a mesma ordem do Adaptive Card de adocao).
 
     Entrega ao template (report_image.py): 1) convite (manchete/corpo/como pedir acesso);
     2) horas devolvidas ao time (semana + acumulado) + serie cumulativa EM HORAS p/ o grafico;
     3) adocao (engenheiros/SPECs prontas); 4) saude (itens + previsao de correcao).
     FICA DE FORA: contagem de arquivos, tabela SPEC-por-SPEC e status cru de workspace.
+    Quando language="en", os textos (manchete/convite/titulo/saude) e os `labels` do poster vao em
+    ingles; "pt" (padrao) mantem o comportamento historico intacto.
     """
+    language = normalize_language(language)
+    cs = card_strings(language)
+    ps = poster_strings(language)
     now_utc = now or datetime.utcnow()
     week_start = now_utc - timedelta(days=7)
     business = compute_card_business(db, now_utc)
@@ -1030,27 +1061,32 @@ def compute_card_image_data(db: Session, now: datetime | None = None) -> dict[st
     p_start = to_sao_paulo_naive(week_start, assume_utc=True).strftime("%d/%m/%Y")
     p_end = today_local.strftime("%d/%m/%Y")
     return {
-        "brand": "STELLANTIS AUTOMATION HUB",
-        "title": "CONVITE — AUTOMATION HUB",
-        "period": f"{p_start} a {p_end}",
+        "brand": ps["brand"],
+        "title": ps["title"],
+        "period": ps["period_sep"].format(a=p_start, b=p_end),
         "generated_at": to_sao_paulo_naive(now_utc, assume_utc=True).strftime("%d/%m/%Y %H:%M"),
-        "headline": CARD_HEADLINE,
-        "invite_body": CARD_INVITE_BODY,
-        "access_line": CARD_ACCESS_LINE,
+        "headline": cs["headline"],
+        "invite_body": cs["invite_body"],
+        "access_line": cs["access_line"],
+        "language": language,
+        "labels": poster_labels(language),
         "playground_url": str(settings.REPORT_CARD_PLAYGROUND_URL or settings.PLAYGROUND_URL or "").strip(),
         "hours": {"week": str(hours.get("week", "0 h")), "total": str(hours.get("total", "0 h"))},
         "hours_series": hours_series,
         "adoption": business.get("adoption", {}),
-        "health": {**business.get("health", {}), "eta": CARD_HEALTH_ETA},
+        "health": {**business.get("health", {}), "eta": cs["health_eta"]},
     }
 
 
-def build_card_summary(report_type: str, sections: list[ReportSection], rep: ExecutionReport, filters: dict[str, Any], business: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_card_summary(report_type: str, sections: list[ReportSection], rep: ExecutionReport, filters: dict[str, Any], business: dict[str, Any] | None = None, language: str = DEFAULT_LANGUAGE) -> dict[str, Any]:
     """Resumo executivo pronto para o Adaptive Card.
 
     Para o Relatorio Simplificado com `business`, monta o card de ADOCAO (convite + horas + adocao +
-    saude). Demais tipos seguem o resumo classico (metrics + previa).
+    saude). Demais tipos seguem o resumo classico (metrics + previa). O idioma escolhido fica em
+    card["language"] e e lido por build_adaptive_card/build_adoption_card ao renderizar.
     """
+    language = normalize_language(language)
+    cs = card_strings(language)
     generated_at = fmt_utc(rep.created_at) if rep.created_at else format_dt(now_sao_paulo_naive())
     # Periodo sempre preenchido: se a janela nao veio nos filtros, usa os ultimos 7 dias.
     start, end = filters.get("start"), filters.get("end")
@@ -1060,6 +1096,7 @@ def build_card_summary(report_type: str, sections: list[ReportSection], rep: Exe
     card: dict[str, Any] = {
         "title": rep.name or report_type,
         "report_type": report_type,
+        "language": language,
         "period": f"{fmt_utc(start)} - {fmt_utc(end)}",
         "generated_at": generated_at,
         "logo_url": str(settings.REPORT_CARD_LOGO_URL or "").strip(),
@@ -1071,9 +1108,9 @@ def build_card_summary(report_type: str, sections: list[ReportSection], rep: Exe
     if simpl is not None and business is not None:
         # Card de adocao: convite como manchete + horas economizadas + adocao + saude em 1 linha.
         card["kind"] = "adoption"
-        card["headline"] = CARD_HEADLINE
-        card["invite_body"] = CARD_INVITE_BODY
-        card["access_line"] = CARD_ACCESS_LINE
+        card["headline"] = cs["headline"]
+        card["invite_body"] = cs["invite_body"]
+        card["access_line"] = cs["access_line"]
         card["access_url"] = str(settings.REPORT_CARD_ACCESS_URL or "").strip()
         card["hours"] = business.get("hours", {})
         card["adoption"] = business.get("adoption", {})
@@ -1093,6 +1130,12 @@ def build_card_summary(report_type: str, sections: list[ReportSection], rep: Exe
         def status_of(row: list[Any]) -> str:
             return cell(row, i_status).strip().upper()
 
+        # Comparacoes robustas ao idioma: o valor exibido do STATUS e localizado, entao comparamos
+        # com o rotulo localizado do token canonico (em pt == COMPLETO/PROGRESSO/ERRO).
+        s_complete = simplificado_status("COMPLETO", language).upper()
+        s_progress = simplificado_status("PROGRESSO", language).upper()
+        s_error = simplificado_status("ERRO", language).upper()
+
         total_files = 0
         for row in simpl.rows:
             try:
@@ -1101,11 +1144,11 @@ def build_card_summary(report_type: str, sections: list[ReportSection], rep: Exe
                 pass
 
         card["metrics"] = [
-            {"label": "Workspaces", "value": str(len(simpl.rows))},
-            {"label": "Completos", "value": str(sum(1 for r in simpl.rows if status_of(r) == "COMPLETO"))},
-            {"label": "Em progresso", "value": str(sum(1 for r in simpl.rows if status_of(r) == "PROGRESSO"))},
-            {"label": "Com erro", "value": str(sum(1 for r in simpl.rows if status_of(r) == "ERRO"))},
-            {"label": "Arquivos", "value": str(total_files)},
+            {"label": cs["m_workspaces"], "value": str(len(simpl.rows))},
+            {"label": cs["m_complete"], "value": str(sum(1 for r in simpl.rows if status_of(r) == s_complete))},
+            {"label": cs["m_inprogress"], "value": str(sum(1 for r in simpl.rows if status_of(r) == s_progress))},
+            {"label": cs["m_error"], "value": str(sum(1 for r in simpl.rows if status_of(r) == s_error))},
+            {"label": cs["m_files"], "value": str(total_files)},
         ]
         preview_rows = simpl.rows[:SIMPLIFICADO_PREVIEW_MAX]
         card["preview"] = {
@@ -1166,6 +1209,8 @@ def build_adoption_card(card: dict[str, Any]) -> dict[str, Any]:
     1) convite (manchete + corpo + como pedir acesso); 2) horas devolvidas; 3) adocao; 4) saude em
     1 linha; rodape com periodo/gerado e os botoes.
     """
+    language = normalize_language(card.get("language"))
+    cs = card_strings(language)
     body: list[dict[str, Any]] = _adoption_header(card)
 
     # 1) Convite: manchete + corpo + "como pedir acesso".
@@ -1178,39 +1223,38 @@ def build_adoption_card(card: dict[str, Any]) -> dict[str, Any]:
     # 2) Horas devolvidas ao time (prova de valor).
     hours = card.get("hours") or {}
     minutes_per_file = float(hours.get("minutes_per_file", 4) or 0)
-    body.append({"type": "TextBlock", "text": "⏱️ Tempo devolvido ao time", "weight": "Bolder", "separator": True, "spacing": "Medium", "wrap": True})
+    body.append({"type": "TextBlock", "text": cs["hours_title"], "weight": "Bolder", "separator": True, "spacing": "Medium", "wrap": True})
     body.append({"type": "FactSet", "facts": [
-        {"title": "Esta semana", "value": str(hours.get("week", "0 min"))},
-        {"title": "Acumulado", "value": str(hours.get("total", "0 min"))},
+        {"title": cs["this_week"], "value": str(hours.get("week", "0 min"))},
+        {"title": cs["total"], "value": str(hours.get("total", "0 min"))},
     ]})
-    body.append({"type": "TextBlock", "text": f"Cada arquivo preparado é setup que ninguém precisou fazer à mão ({minutes_per_file:g} min/arquivo).", "isSubtle": True, "wrap": True, "spacing": "None", "size": "Small"})
+    body.append({"type": "TextBlock", "text": cs["hours_note"].format(mpf=minutes_per_file), "isSubtle": True, "wrap": True, "spacing": "None", "size": "Small"})
 
     # 3) Adocao.
     adoption = card.get("adoption") or {}
-    body.append({"type": "TextBlock", "text": "📈 Quem já está usando", "weight": "Bolder", "separator": True, "spacing": "Medium", "wrap": True})
+    body.append({"type": "TextBlock", "text": cs["adoption_title"], "weight": "Bolder", "separator": True, "spacing": "Medium", "wrap": True})
     body.append({"type": "FactSet", "facts": [
-        {"title": "Engenheiros usando", "value": str(adoption.get("engineers", 0))},
-        {"title": "SPECs prontas", "value": str(adoption.get("specs_ready", 0))},
+        {"title": cs["engineers"], "value": str(adoption.get("engineers", 0))},
+        {"title": cs["specs_ready"], "value": str(adoption.get("specs_ready", 0))},
     ]})
 
     # 4) Saude em 1 linha: itens em tratamento + previsao de correcao.
     items = int((card.get("health") or {}).get("items") or 0)
     if items > 0:
-        eta = str((card.get("health") or {}).get("eta") or CARD_HEALTH_ETA).strip()
-        eta_txt = f" — previsão de correção {eta}" if eta else ""
-        body.append({"type": "TextBlock", "text": f"⚠️ {items} item(ns) em tratamento{eta_txt}. Já estamos resolvendo.", "color": "Warning", "wrap": True, "separator": True, "spacing": "Medium"})
+        eta = str((card.get("health") or {}).get("eta") or cs["health_eta"]).strip()
+        eta_txt = cs["health_eta_prefix"].format(eta=eta) if eta else ""
+        body.append({"type": "TextBlock", "text": cs["health_warn"].format(items=items, eta=eta_txt), "color": "Warning", "wrap": True, "separator": True, "spacing": "Medium"})
     else:
-        body.append({"type": "TextBlock", "text": "✅ Tudo certo — sem itens em tratamento.", "color": "Good", "wrap": True, "separator": True, "spacing": "Medium"})
+        body.append({"type": "TextBlock", "text": cs["health_ok"], "color": "Good", "wrap": True, "separator": True, "spacing": "Medium"})
 
     # Rodape: periodo + gerado em (discretos).
-    body.append({"type": "TextBlock", "text": f"Período: {card.get('period', '')}", "isSubtle": True, "wrap": True, "spacing": "Small", "size": "Small"})
-    body.append({"type": "TextBlock", "text": f"Gerado em: {card.get('generated_at', '')}", "isSubtle": True, "wrap": True, "spacing": "None", "size": "Small"})
+    body.append({"type": "TextBlock", "text": cs["period"].format(v=card.get('period', '')), "isSubtle": True, "wrap": True, "spacing": "Small", "size": "Small"})
+    body.append({"type": "TextBlock", "text": cs["generated"].format(v=card.get('generated_at', '')), "isSubtle": True, "wrap": True, "spacing": "None", "size": "Small"})
 
-    actions: list[dict[str, Any]] = []
-    access_url = str(card.get("access_url") or "").strip()
-    if access_url:
-        actions.append({"type": "Action.OpenUrl", "title": "Solicitar acesso", "url": access_url})
-    actions.append({"type": "Action.OpenUrl", "title": "Ver detalhes (PDF)", "url": DOWNLOAD_URL_PLACEHOLDER})
+    actions: list[dict[str, Any]] = [
+        build_access_request_showcard(language),
+        {"type": "Action.OpenUrl", "title": cs["view_details_pdf"], "url": DOWNLOAD_URL_PLACEHOLDER},
+    ]
 
     return {
         "type": "AdaptiveCard",
@@ -1222,23 +1266,66 @@ def build_adoption_card(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_access_request_showcard(language: str = DEFAULT_LANGUAGE) -> dict[str, Any]:
+    """Sub-card (Action.ShowCard) do formulario de solicitacao de acesso, revelado inline no
+    proprio card semanal — sem navegar para fora do Teams e sem precisar de um 2o fluxo/Run.
+
+    O Action.Submit devolve `data.acao = "solicitar_acesso"` + idrede/spec/justificativa; o fluxo
+    do Power Automate que postou o card (via "Post adaptive card and wait for a response") recebe
+    a resposta e quem enviou (`responder`), grava na Lista do SharePoint e avisa o aprovador.
+    """
+    cs = card_strings(language)
+    return {
+        "type": "Action.ShowCard",
+        "title": cs["request_access"],
+        "card": {
+            "type": "AdaptiveCard",
+            "body": [
+                {"type": "TextBlock", "text": cs["sc_title"], "weight": "Bolder", "wrap": True},
+                {"type": "TextBlock", "text": cs["sc_subtitle"], "isSubtle": True, "wrap": True, "spacing": "None"},
+                {"type": "Input.Text", "id": "idrede", "label": cs["sc_idrede_label"], "placeholder": cs["sc_idrede_ph"], "isRequired": True, "errorMessage": cs["sc_idrede_err"]},
+                {"type": "Input.Text", "id": "spec", "label": cs["sc_spec_label"], "placeholder": cs["sc_spec_ph"], "isRequired": True, "errorMessage": cs["sc_spec_err"]},
+                {"type": "Input.Text", "id": "justificativa", "label": cs["sc_just_label"], "placeholder": cs["sc_just_ph"], "isMultiline": True},
+            ],
+            "actions": [
+                {"type": "Action.Submit", "title": cs["sc_submit"], "data": {"acao": "solicitar_acesso"}},
+            ],
+        },
+    }
+
+
+# NOTA (image_placeholder/download_placeholder abaixo): quando REPORT_BACKEND_BASE_URL esta
+# configurada, write_report_to_delivery_folder substitui os dois placeholders pelos links DIRETOS
+# do backend antes de gravar o sidecar -- o Power Automate deixa de precisar trocar esses
+# placeholders pelos links do OneDrive (menos passos, menos pontos de falha).
 def build_report_image_card(
     image_placeholder: str = IMAGE_URL_PLACEHOLDER,
     download_placeholder: str = DOWNLOAD_URL_PLACEHOLDER,
+    language: str = DEFAULT_LANGUAGE,
 ) -> dict[str, Any]:
     """Card-imagem do Teams: o PNG fiel do relatorio (via Image) + botoes de acao.
 
-    Ordem dos botoes: Abrir Playground (CTA principal) -> Solicitar Acesso (se configurado) ->
-    Baixar Relatorio (PDF). Os placeholders de imagem/PDF sao trocados pelo Power Automate.
+    Ordem dos botoes: Abrir Playground (CTA principal) -> Solicitar Acesso (ShowCard inline,
+    formulario revelado dentro do proprio card) -> Baixar Relatorio (PDF). O placeholder de
+    imagem/PDF e trocado pelo Power Automate (ou, se REPORT_BACKEND_BASE_URL estiver configurada,
+    ja chega substituido pelo link direto do backend -- ver write_report_to_delivery_folder).
+
+    NOTA (10/07/2026): cheguei a trocar "Solicitar Acesso" para Action.OpenUrl aqui, achando que o
+    ShowCard nao funcionava (a documentacao generica do GUIA_POWER_AUTOMATE.md posta o card com
+    "Post card in a chat or channel", que de fato nao processa Action.Submit). Revertido: o fluxo
+    REAL no Power Automate ("HUB - Relatorios Teams") posta este card com "Post adaptive card and
+    wait for a response" seguido de "Create item" (SharePoint) + "Post message in a chat or
+    channel" -- ou seja, o ShowCard FOI PROJETADO para funcionar nesse fluxo especifico (o
+    Action.Submit do formulario embutido volta como resposta para essa mesma acao). Mantido como
+    estava.
     """
+    cs = card_strings(language)
     playground_url = str(settings.REPORT_CARD_PLAYGROUND_URL or settings.PLAYGROUND_URL or "").strip()
-    access_url = str(settings.REPORT_CARD_ACCESS_URL or "").strip()
     actions: list[dict[str, Any]] = []
     if playground_url:
-        actions.append({"type": "Action.OpenUrl", "title": "Abrir Playground", "url": playground_url})
-    if access_url:
-        actions.append({"type": "Action.OpenUrl", "title": "Solicitar Acesso", "url": access_url})
-    actions.append({"type": "Action.OpenUrl", "title": "Baixar Relatório (PDF)", "url": download_placeholder})
+        actions.append({"type": "Action.OpenUrl", "title": cs["open_playground"], "url": playground_url})
+    actions.append(build_access_request_showcard(language))
+    actions.append({"type": "Action.OpenUrl", "title": cs["download_pdf"], "url": download_placeholder})
     return {
         "type": "AdaptiveCard",
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -1258,7 +1345,9 @@ def build_adaptive_card(card: dict[str, Any]) -> dict[str, Any]:
     """Adaptive Card 1.4 (compativel com Teams) pronto para postar verbatim no Power Automate."""
     if card.get("kind") == "adoption":
         return build_adoption_card(card)
-    brand = {"type": "TextBlock", "text": "Stellantis Automation HUB", "weight": "Bolder", "size": "Small", "color": "Accent", "spacing": "None"}
+    language = normalize_language(card.get("language"))
+    cs = card_strings(language)
+    brand = {"type": "TextBlock", "text": cs["brand"], "weight": "Bolder", "size": "Small", "color": "Accent", "spacing": "None"}
     title = {"type": "TextBlock", "text": card.get("title", ""), "weight": "Bolder", "size": "Large", "wrap": True}
     logo_url = str(card.get("logo_url") or "").strip()
     if logo_url:
@@ -1279,8 +1368,8 @@ def build_adaptive_card(card: dict[str, Any]) -> dict[str, Any]:
     else:
         body = [brand, title]
     body.extend([
-        {"type": "TextBlock", "text": f"Periodo: {card.get('period', '')}", "isSubtle": True, "wrap": True, "spacing": "None"},
-        {"type": "TextBlock", "text": f"Gerado em: {card.get('generated_at', '')}", "isSubtle": True, "wrap": True, "spacing": "None"},
+        {"type": "TextBlock", "text": cs["period_classic"].format(v=card.get('period', '')), "isSubtle": True, "wrap": True, "spacing": "None"},
+        {"type": "TextBlock", "text": cs["generated_classic"].format(v=card.get('generated_at', '')), "isSubtle": True, "wrap": True, "spacing": "None"},
     ])
     metrics = card.get("metrics") or []
     if metrics:
@@ -1293,7 +1382,7 @@ def build_adaptive_card(card: dict[str, Any]) -> dict[str, Any]:
     preview = card.get("preview") or {}
     preview_rows = preview.get("rows") or []
     if preview_rows:
-        body.append({"type": "TextBlock", "text": f"Previa - {card.get('report_type', '')}", "weight": "Bolder", "separator": True, "spacing": "Medium", "wrap": True})
+        body.append({"type": "TextBlock", "text": cs["preview"].format(type=card.get('report_type', '')), "weight": "Bolder", "separator": True, "spacing": "Medium", "wrap": True})
         headers = preview.get("headers") or []
         if headers:
             body.append(_card_row(headers, bold=True))
@@ -1301,7 +1390,7 @@ def build_adaptive_card(card: dict[str, Any]) -> dict[str, Any]:
             body.append(_card_row(row))
         overflow = int(preview.get("overflow") or 0)
         if overflow > 0:
-            body.append({"type": "TextBlock", "text": f"... e mais {overflow} workspace(s) - ver PDF anexo.", "isSubtle": True, "wrap": True, "spacing": "Small"})
+            body.append({"type": "TextBlock", "text": cs["overflow"].format(n=overflow), "isSubtle": True, "wrap": True, "spacing": "Small"})
     return {
         "type": "AdaptiveCard",
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -1309,7 +1398,7 @@ def build_adaptive_card(card: dict[str, Any]) -> dict[str, Any]:
         "msteams": {"width": "Full"},
         "body": body,
         "actions": [
-            {"type": "Action.OpenUrl", "title": "Baixar PDF", "url": DOWNLOAD_URL_PLACEHOLDER},
+            {"type": "Action.OpenUrl", "title": cs["download_pdf_short"], "url": DOWNLOAD_URL_PLACEHOLDER},
         ],
     }
 
@@ -1322,6 +1411,7 @@ def report_delivery_bundle(db: Session, report_id: int) -> dict[str, Any]:
     ).first()
     if not rep:
         raise HTTPException(404, detail="Relatorio nao encontrado.")
+    language = normalize_language(getattr(rep, "language", None))
     report_type, file_format = report_type_and_format(rep)
     if rep.file_path and Path(rep.file_path).exists():
         content = Path(rep.file_path).read_bytes()
@@ -1337,17 +1427,17 @@ def report_delivery_bundle(db: Session, report_id: int) -> dict[str, Any]:
     )
     # Conteudo estruturado para o card (resumo + previa) e PDF companheiro para anexo no Teams.
     filters = filters_for_report(rep)
-    sections = build_sections(db, report_type, filters)
+    sections = build_sections(db, report_type, filters, language)
     business = compute_card_business(db)
-    card = build_card_summary(report_type, sections, rep, filters, business=business)
+    card = build_card_summary(report_type, sections, rep, filters, business=business, language=language)
     adaptive_card = build_adaptive_card(card)
     # Card-imagem (PNG fiel ao mockup) so no relatorio de adocao/simplificado (o do card semanal).
-    image_data = compute_card_image_data(db) if card.get("kind") == "adoption" else None
+    image_data = compute_card_image_data(db, language=language) if card.get("kind") == "adoption" else None
     if file_format == "pdf":
         pdf_content = content
         pdf_filename = filename
     else:
-        pdf_content = build_report_content(report_type, "pdf", filters, db)
+        pdf_content = build_report_content(report_type, "pdf", filters, db, language)
         pdf_filename = f"{Path(filename).stem}.pdf"
     return {
         "report": rep,
@@ -1419,12 +1509,13 @@ def write_report_to_delivery_folder(bundle: dict, routing: dict | None = None, e
     # Card-imagem (PNG fiel ao mockup): renderiza so quando ha image_data (relatorio de adocao) e
     # o Chromium offline consegue gerar. Falhou (sem browser/timeout)? cai no card-texto (fallback),
     # sem quebrar a entrega.
+    language = normalize_language(getattr(rep, "language", None))
     image_data = bundle.get("image_data")
     image_path = None
     if image_data:
         image_path = _render_report_image_threaded(image_data, target / f"{report_path.stem}.png")
     if image_path is not None:
-        adaptive_card = build_report_image_card()
+        adaptive_card = build_report_image_card(language=language)
     else:
         adaptive_card = bundle.get("adaptive_card")
 
@@ -1445,6 +1536,24 @@ def write_report_to_delivery_folder(bundle: dict, routing: dict | None = None, e
     if image_path is not None:
         sidecar["image_file"] = image_path.name
         sidecar["image_url_placeholder"] = IMAGE_URL_PLACEHOLDER
+
+    # Links DIRETOS do proprio backend (opcional, ver REPORT_BACKEND_BASE_URL em config.py).
+    # Quando configurada, ja substituimos os placeholders AQUI (antes de gravar o sidecar) pelos
+    # links estaveis do backend -- o Power Automate posta 'adaptive_card' verbatim, sem precisar
+    # dos passos "Create share link" do OneDrive (Parte I.4/I.5 do GUIA_POWER_AUTOMATE.md).
+    base_url = str(settings.REPORT_BACKEND_BASE_URL or "").strip()
+    if base_url:
+        base_url = base_url.rstrip("/")
+        download_direct_url = f"{base_url}/api/reports/{rep.id}/download"
+        sidecar["download_direct_url"] = download_direct_url
+        card_text = json.dumps(sidecar["adaptive_card"], ensure_ascii=False)
+        card_text = card_text.replace(DOWNLOAD_URL_PLACEHOLDER, download_direct_url)
+        if image_path is not None:
+            image_direct_url = f"{base_url}/api/reports/{rep.id}/image"
+            sidecar["image_direct_url"] = image_direct_url
+            card_text = card_text.replace(IMAGE_URL_PLACEHOLDER, image_direct_url)
+        sidecar["adaptive_card"] = json.loads(card_text)
+
     for key in ("teams_channel", "email_to", "subject"):
         if routing and routing.get(key):
             sidecar[key] = routing[key]
@@ -1475,13 +1584,16 @@ def create_report(data: dict, db: Session = Depends(get_db)):
     if file_format not in MEDIA_TYPES:
         raise HTTPException(422, detail="Formato de relatorio invalido.")
     filters = filters_from_payload(data)
+    # Idioma opcional do relatorio ("pt" padrao ou "en"); omitido -> pt (comportamento historico).
+    language = normalize_language(data.get("language"))
     environment_mode = parse_environment_mode(data.get("environment_mode") or data.get("app_mode"))
     if environment_mode == "developer":
-        build_report_content(report_type, file_format, filters, db)
+        build_report_content(report_type, file_format, filters, db, language)
         return {
             "report": None,
             "saved": False,
             "environment_mode": "developer",
+            "language": language,
             "message": "Modo Desenvolvedor: relatorio processado para teste e nada foi salvo.",
         }
     report = persist_report(
@@ -1492,12 +1604,13 @@ def create_report(data: dict, db: Session = Depends(get_db)):
         safe_int(data.get("generated_by_id") or data.get("generated_by_user_id")),
         "manual",
         None,
+        language=language,
     )
     return {"report": report_out(report), "saved": True, "environment_mode": "operational"}
 
 
 @router.get("/{id}/download")
-def download_report(id: int, db: Session = Depends(get_db)):
+def download_report(id: int, language: str | None = Query(None), db: Session = Depends(get_db)):
     report = db.query(ExecutionReport).filter(
         ExecutionReport.id == id,
         ExecutionReport.is_deleted == False,
@@ -1508,16 +1621,52 @@ def download_report(id: int, db: Session = Depends(get_db)):
     _, file_format = report_type_and_format(report)
     safe_name = Path(report.file_path).name if report.file_path else f"{clean_filename(report.name or f'report_{report.id}')}.{file_format}"
     media_type = MEDIA_TYPES.get(file_format, MEDIA_TYPES["csv"])
-    if report.file_path and Path(report.file_path).exists():
+    stored_language = normalize_language(getattr(report, "language", None))
+    # `language` na query permite baixar em outro idioma (regenera o conteudo); sem ela, serve o
+    # arquivo salvo (ou regenera no idioma persistido, se o arquivo sumiu).
+    override = language is not None and normalize_language(language) != stored_language
+    if report.file_path and Path(report.file_path).exists() and not override:
         create_log(db, "info", "Downloaded report", "report", report.id, metadata={"source_scope": REPORT_SOURCE_SCOPE})
         return FileResponse(report.file_path, media_type=media_type, filename=safe_name)
-    content = fallback_content(report, file_format, db)
-    create_log(db, "info", "Downloaded report", "report", report.id, metadata={"source_scope": REPORT_SOURCE_SCOPE})
+    effective_language = normalize_language(language) if language is not None else stored_language
+    content = build_report_content(*report_type_and_format(report), filters_for_report(report), db, effective_language) if override else fallback_content(report, file_format, db)
+    create_log(db, "info", "Downloaded report", "report", report.id, metadata={"source_scope": REPORT_SOURCE_SCOPE, "language": effective_language})
     return StreamingResponse(
         io.BytesIO(content),
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
+
+
+@router.get("/{id}/image")
+def download_report_image(id: int, language: str | None = Query(None), db: Session = Depends(get_db)):
+    """PNG do card semanal (poster-convite), gerado NA HORA e servido direto pelo backend.
+
+    Pensado para o `Image.url` do Adaptive Card do Teams: um link ESTAVEL (nao expira, nao depende
+    de politica de compartilhamento) -- alternativa ao link do OneDrive (GUIA_POWER_AUTOMATE.md,
+    Parte I), que e o ponto mais fragil da entrega hoje (comportamento nao documentado do
+    `&download=1`). So funciona para relatorios com card de adocao (Relatorio Simplificado); demais
+    tipos nao tem imagem (404).
+    """
+    report = db.query(ExecutionReport).filter(
+        ExecutionReport.id == id,
+        ExecutionReport.is_deleted == False,
+        ExecutionReport.source_scope == REPORT_SOURCE_SCOPE,
+    ).first()
+    if not report:
+        raise HTTPException(404, detail="Relatorio nao encontrado.")
+
+    effective_language = normalize_language(language) if language is not None else normalize_language(getattr(report, "language", None))
+    image_data = compute_card_image_data(db, language=effective_language)
+    import tempfile
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="report_image_"))
+    image_path = _render_report_image_threaded(image_data, tmp_dir / f"report_{id}.png")
+    if image_path is None:
+        raise HTTPException(502, detail="Nao foi possivel gerar a imagem do relatorio (Chromium/Playwright offline indisponivel).")
+
+    create_log(db, "info", "Rendered report image", "report", report.id, metadata={"source_scope": REPORT_SOURCE_SCOPE})
+    return StreamingResponse(io.BytesIO(image_path.read_bytes()), media_type="image/png")
 
 
 @router.delete("/{id}")

@@ -15,7 +15,7 @@ Nomes de campo espelham as chaves que o Home ja consome (`processedFiles`,
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -29,6 +29,14 @@ router = APIRouter()
 _ERROR_STATUSES = ("error", "failed")
 _READY_STATUSES = ("ready",)
 _RESOLVED_STATUSES = ("resolved",)
+_MANUAL_STATUSES = ("manual_review",)
+
+
+def _playground_error_criteria():
+    """Espelha o predicado `Ka` do front: playground_status contendo 'erro'/'error'
+    (case-insensitive). Um valor NULL nao casa (lower(NULL) -> NULL)."""
+    col = func.lower(WorkspaceFile.playground_status)
+    return or_(col.like("%erro%"), col.like("%error%"))
 
 
 @router.get("")
@@ -45,6 +53,16 @@ def get_overview(db: Session = Depends(get_db)) -> dict:
     errors = count_files(WorkspaceFile.status.in_(_ERROR_STATUSES))
     successful = count_files(WorkspaceFile.status.in_(_READY_STATUSES))
     resolved = count_files(WorkspaceFile.status.in_(_RESOLVED_STATUSES))
+
+    # Contadores autoritativos do card "Resumo de Erros" (Home). COUNT O(1),
+    # sem depender do array paginado (teto 1000) do navegador. Mesma semantica
+    # atual do front para os numeros baterem:
+    #   - workspaceErrorCount  -> playground_status em erro (predicado `Ka`)
+    #   - automationErrorCount -> status em error/failed
+    #   - manualActionCount    -> status == manual_review
+    workspace_error_count = count_files(_playground_error_criteria())
+    automation_error_count = errors
+    manual_action_count = count_files(WorkspaceFile.status.in_(_MANUAL_STATUSES))
 
     automations_registered = int(
         db.query(func.count(Automation.id))
@@ -65,6 +83,10 @@ def get_overview(db: Session = Depends(get_db)) -> dict:
         "successfulFiles": successful,        # status ready
         "resolvedFiles": resolved,            # status resolved
         "errorsResolved": resolved,           # alias consumido pela pizza do Home
+        # Card "Resumo de Erros" (Home): contagens autoritativas por COUNT.
+        "workspaceErrorCount": workspace_error_count,
+        "automationErrorCount": automation_error_count,
+        "manualActionCount": manual_action_count,
         "automationsRegistered": automations_registered,
         "activeWorkspaces": workspaces_total,
         "totalWorkspaces": workspaces_total,

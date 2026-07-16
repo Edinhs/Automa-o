@@ -298,7 +298,7 @@ def run_due_report_schedule(db: Session, schedule: Schedule, now: datetime) -> N
         
         report_type = parse_report_type(schedule.report_type)
         file_format = parse_file_format(schedule.report_format)
-        
+
         rep = persist_report(
             db=db,
             report_type=report_type,
@@ -308,6 +308,7 @@ def run_due_report_schedule(db: Session, schedule: Schedule, now: datetime) -> N
             generation_trigger="automatic",
             source_task_id=None,
             deliver_to_folder=bool(getattr(schedule, "deliver_to_folder", False)),
+            language=getattr(schedule, "report_language", None) or "pt",
         )
         
         schedule.last_run_at = now

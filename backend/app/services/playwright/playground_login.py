@@ -135,17 +135,24 @@ def wait_for_login_completion(
     timeout_minutes: int | None = None,
     should_continue: Callable[[], bool] | None = None,
 ) -> None:
+    # timeout_minutes (e settings.MANUAL_LOGIN_TIMEOUT_MINUTES) ficam por compatibilidade de
+    # assinatura, mas sao IGNORADOS de proposito: o dono quer esperar INDEFINIDAMENTE pelo login
+    # manual, sem NUNCA cair em erro por timeout. O unico jeito de abortar e o botao "parar"
+    # (should_continue levanta a excecao de parada -> a task vira "cancelled", nao "failed").
     log("warning", "Login manual necessario: conclua o login no Chromium aberto para continuar a automacao.")
-    deadline = time.monotonic() + ((timeout_minutes or settings.MANUAL_LOGIN_TIMEOUT_MINUTES) * 60)
-    while time.monotonic() < deadline:
-        # Deixa o botao "parar" interromper o login manual em vez de ficar preso ate o timeout.
+    iteration = 0
+    while True:
+        # Deixa o botao "parar" interromper o login manual (unica saida alem do login concluido).
         if should_continue:
             should_continue()
         if is_logged_in(page):
             log("info", "Login confirmado.")
             return
+        iteration += 1
+        # Lembrete periodico (~a cada 30s = 6 iteracoes de 5s) para o dono nao achar que travou.
+        if iteration % 6 == 0:
+            log("info", "Aguardando login manual no Chromium aberto... (a automacao continua esperando)")
         time.sleep(5)
-    raise PlaygroundLoginTimeout("Timeout aguardando login manual no Playground GenAI.")
 
 
 def ensure_logged_in(

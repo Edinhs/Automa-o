@@ -119,6 +119,13 @@ class Settings(BaseSettings):
     REPORT_CARD_ACCESS_URL: str = ""
     # URL do botao "Abrir Playground" no Adaptive Card semanal. Vazio = usa PLAYGROUND_URL.
     REPORT_CARD_PLAYGROUND_URL: str = ""
+    # URL base HTTP do proprio backend, alcancavel pelo Teams (ex.: http://10.x.x.x:8000 ou um
+    # hostname interno). Quando preenchida, o sidecar do relatorio semanal grava links DIRETOS
+    # para a imagem (/api/reports/{id}/image) e o PDF (/api/reports/{id}/download) do proprio
+    # backend -- o Power Automate usa esses links no lugar do link de compartilhamento do OneDrive
+    # (mais estavel: sem depender de politica de DLP nem do comportamento nao documentado do
+    # "&download=1"). Vazio (padrao) = comportamento antigo, sem mudanca.
+    REPORT_BACKEND_BASE_URL: str = ""
 
     class Config:
         env_file = ".env"

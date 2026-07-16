@@ -1,6 +1,8 @@
 import base64
 import json
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -9,7 +11,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.integration import IntegrationConnection, IntegrationDelivery
-from app.routers.reports import report_delivery_bundle, write_report_to_delivery_folder
+from app.routers.reports import (
+    _render_report_image_threaded,
+    compute_card_image_data,
+    report_delivery_bundle,
+    write_report_to_delivery_folder,
+)
 from app.services.audit import create_log
 from app.services.integrations.graph_client import (
     GraphClient,
@@ -219,6 +226,74 @@ def send_report_teams(report_id: int, data: dict, request: Request, db: Session 
             result = GraphClient(settings).send_channel_message(request_payload)
         _finish_delivery(db, delivery, "sent", result.data)
         return {"status": "sent", "channel": "teams", "delivery": _delivery_response(delivery)}
+    except GraphIntegrationError as exc:
+        _fail_delivery(db, delivery, exc)
+        raise _http_error(exc) from exc
+
+
+@router.post("/reports/{report_id}/teams-image")
+def send_report_teams_image(report_id: int, data: dict, request: Request, db: Session = Depends(get_db)):
+    """Envio DIRETO do card semanal (imagem + botoes) via Microsoft Graph -- ALTERNATIVA ADITIVA ao
+    fluxo do Power Automate (GUIA_POWER_AUTOMATE.md, Parte I). Nao remove nem altera /deliver-folder
+    nem /reports/{id}/teams; e um caminho a mais, pensado para resolver o ponto fragil documentado no
+    guia: o link de compartilhamento do OneDrive (+ '&download=1') as vezes nao devolve os bytes do
+    PNG e a imagem nao renderiza no Teams.
+
+    Aqui a imagem viaja embutida na propria mensagem (Microsoft Graph `hostedContents`, ate 4 MB),
+    sem depender de OneDrive/SharePoint. Requer o Graph configurado (MS_GRAPH_*) e o app registrado
+    com permissao de aplicativo para postar no canal (mesma config ja usada por /teams/messages).
+
+    IMPORTANTE: so funciona para CANAIS de Equipe (credencial de aplicativo). Nao funciona para
+    chats 1:1/grupo (ex.: "1:1 Ederson") -- a Microsoft nao permite postar em chats com credencial
+    de aplicativo, so com login delegado de usuario ou um Bot. Para esse caso, ver
+    RECOMENDACAO_TEAMS_IMAGEM_GRAPH.md, Secao 6 (links diretos do backend + Power Automate).
+
+    Botao "Solicitar Acesso": aponta (Action.OpenUrl) para REPORT_CARD_ACCESS_URL -- o link do
+    fluxo "Solicitar acesso - Teams" (Parte III do guia).
+    """
+    bundle = report_delivery_bundle(db, report_id)
+    rep = bundle["report"]
+    image_data = bundle.get("image_data") or compute_card_image_data(db)
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="teams_graph_image_"))
+    image_path = _render_report_image_threaded(image_data, tmp_dir / f"report_{report_id}.png")
+    if image_path is None:
+        raise HTTPException(502, "Nao foi possivel gerar a imagem do relatorio (Chromium/Playwright offline indisponivel).")
+    image_bytes = image_path.read_bytes()
+
+    download_url = str(data.get("download_url") or "").strip() or f"{str(request.base_url).rstrip('/')}/api/reports/{report_id}/download"
+    playground_url = str(settings.REPORT_CARD_PLAYGROUND_URL or settings.PLAYGROUND_URL or "").strip()
+    access_url = str(data.get("access_url") or settings.REPORT_CARD_ACCESS_URL or "").strip()
+
+    actions: list[dict[str, Any]] = []
+    if playground_url:
+        actions.append({"type": "Action.OpenUrl", "title": "Abrir Playground", "url": playground_url})
+    if access_url:
+        actions.append({"type": "Action.OpenUrl", "title": "Solicitar Acesso", "url": access_url})
+    actions.append({"type": "Action.OpenUrl", "title": "Baixar Relatório (PDF)", "url": download_url})
+    adaptive_card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "msteams": {"width": "Full"},
+        "body": [],
+        "actions": actions,
+    }
+
+    team_id = str(data.get("team_id") or settings.MS_GRAPH_TEAMS_TEAM_ID or "").strip()
+    channel_id = str(data.get("channel_id") or settings.MS_GRAPH_TEAMS_CHANNEL_ID or "").strip()
+    target = f"{team_id or '-'}/{channel_id or '-'}"
+    request_payload = {"report_id": report_id, "target": target, "download_url": download_url}
+    delivery = _create_delivery(db, "Teams", "report_teams_image", target, rep.name, request_payload)
+    try:
+        result = GraphClient(settings).send_channel_message_with_image_card(
+            team_id=team_id,
+            channel_id=channel_id,
+            image_bytes=image_bytes,
+            adaptive_card=adaptive_card,
+        )
+        _finish_delivery(db, delivery, "sent", result.data)
+        return {"status": "sent", "channel": "teams_graph_image", "delivery": _delivery_response(delivery)}
     except GraphIntegrationError as exc:
         _fail_delivery(db, delivery, exc)
         raise _http_error(exc) from exc

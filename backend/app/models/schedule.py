@@ -23,6 +23,9 @@ class Schedule(Base):
     status = Column(String, default="active", index=True) # active/paused/inactive
     report_type = Column(String, nullable=True)
     report_format = Column(String, nullable=True)
+    # Idioma do relatorio gerado por este agendamento ("pt" padrao ou "en"). Propagado por
+    # run_due_report_schedule -> persist_report(..., language=...).
+    report_language = Column(String, default="pt", server_default="pt", nullable=False)
     # Quando True, o relatorio gerado por este agendamento tambem e copiado para a pasta de entrega
     # (REPORT_DELIVERY_PATH do .env / Power Automate). Default False: relatorio fica so em REPORTS_PATH.
     deliver_to_folder = Column(Boolean, default=False, nullable=False)
