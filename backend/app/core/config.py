@@ -13,6 +13,7 @@ RUNTIME_PATH_NAMES = (
     "REPORTS_PATH",
     "LOGS_PATH",
     "PROFILE_PHOTOS_PATH",
+    "TEAMS_BROWSER_SESSION_PATH",
 )
 _environment_context: ContextVar[str] = ContextVar("automation_hub_environment", default="operational")
 
@@ -61,6 +62,12 @@ class Settings(BaseSettings):
     BROWSER_SESSION_PATH: str = "./data/browser_session"
     OPERATIONAL_BROWSER_SESSION_PATH: str = ""
     DEVELOPER_BROWSER_SESSION_PATH: str = "./data/developer/browser_session"
+    TEAMS_BROWSER_SESSION_PATH: str = "./data/browser_session_teams"
+    OPERATIONAL_TEAMS_BROWSER_SESSION_PATH: str = ""
+    DEVELOPER_TEAMS_BROWSER_SESSION_PATH: str = "./data/developer/browser_session_teams"
+    TEAMS_DELIVERY_CHAT_NAME: str = "1:1 Ederson"
+    TEAMS_WEB_URL: str = "https://teams.microsoft.com/v2/"
+    TEAMS_DELIVERY_METHOD: str = "playwright"
     AGENT_SHARED_TOKEN: str = "local-dev-agent-token"
     AGENT_POLL_INTERVAL_SECONDS: int = 5
     PLAYWRIGHT_HEADLESS: bool = False
@@ -126,6 +133,28 @@ class Settings(BaseSettings):
     # (mais estavel: sem depender de politica de DLP nem do comportamento nao documentado do
     # "&download=1"). Vazio (padrao) = comportamento antigo, sem mudanca.
     REPORT_BACKEND_BASE_URL: str = ""
+
+    # --- Entrega automatica de PNG avulso para o Teams (pasta monitorada, sem report_id) ---
+    # Liga/desliga a automacao inteira (padrao desligado: precisa configurar a pasta antes).
+    TEAMS_PNG_DELIVERY_ENABLED: bool = False
+    # Pasta onde o PNG (gerado por processo externo, ex.: toda segunda) e depositado.
+    TEAMS_PNG_WATCH_FOLDER: str = ""
+    # Chat/canal de destino no Teams (nome exato como aparece no Teams Web). Vazio = usa
+    # TEAMS_DELIVERY_CHAT_NAME (mesmo padrao do envio de relatorio).
+    TEAMS_PNG_DELIVERY_CHAT_NAME: str = ""
+    # Texto da mensagem enviada junto com o PNG. Vazio = mensagem padrao com o nome do arquivo.
+    TEAMS_PNG_DELIVERY_TEXT: str = ""
+    # Modo de deteccao do arquivo novo:
+    #   "schedule"   -> so verifica a pasta no dia/hora fixos (TEAMS_PNG_DELIVERY_DAY_OF_WEEK/TIME).
+    #   "continuous" -> verifica a pasta em intervalo fixo (TEAMS_PNG_DELIVERY_POLL_INTERVAL_SECONDS),
+    #                    independente de dia/hora -- assim que um PNG novo aparece, envia.
+    TEAMS_PNG_DELIVERY_MODE: str = "schedule"
+    # Dia da semana (aceita nomes em pt/en: "segunda"/"monday", "seg"/"mon", etc.) usado no modo "schedule".
+    TEAMS_PNG_DELIVERY_DAY_OF_WEEK: str = "monday"
+    # Horario (HH:MM, 24h, America/Sao_Paulo) usado no modo "schedule".
+    TEAMS_PNG_DELIVERY_TIME: str = "09:00"
+    # Intervalo (segundos) usado no modo "continuous".
+    TEAMS_PNG_DELIVERY_POLL_INTERVAL_SECONDS: int = 300
 
     class Config:
         env_file = ".env"

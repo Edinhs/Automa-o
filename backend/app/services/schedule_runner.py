@@ -14,10 +14,12 @@ from sqlalchemy.orm import Session
 from app.core.config import SUPPORTED_ENVIRONMENTS, environment_scope, settings
 from app.core.timezone import now_sao_paulo_naive, parse_sao_paulo_datetime, to_sao_paulo_naive
 from app.db.session import session_for_environment
+from app.models.agent import AgentTask
 from app.models.automation import Automation
 from app.models.schedule import Schedule
-from app.routers.automations import create_upload_task_for_automation
+from app.routers.automations import create_upload_task_for_automation, fallback_session_user
 from app.services.audit import create_log
+from app.services import teams_png_watch
 
 ACTIVE_STATUS = "active"
 PAUSED_STATUS = "paused"
@@ -425,11 +427,68 @@ def run_due_schedules_for_all_environments(now: datetime | None = None) -> int:
     return triggered
 
 
+def run_due_teams_png_delivery(now: datetime | None = None) -> bool:
+    """Verifica (via app.services.teams_png_watch) se ha um PNG novo pronto para envio ao
+    Teams e, se houver, enfileira a task 'deliver_png_teams_playwright' para o agente local
+    processar. Roda em TODOS os ambientes suportados (a automacao e' global, dirigida por
+    .env, e nao pertence a um ambiente operational/developer especifico) -- mas so cria a
+    task no ambiente onde existir um usuario de sessao Playground valido (fallback_session_user).
+
+    Retorna True se uma task foi criada nesta chamada.
+    """
+    def _log(level: str, message: str, **kwargs) -> None:
+        print(f"[teams_png_watch] {level.upper()}: {message}", flush=True)
+
+    result = teams_png_watch.check_for_new_png(log=_log)
+    if not result or not result.get("queued"):
+        return False
+
+    for environment in SUPPORTED_ENVIRONMENTS:
+        with environment_scope(environment):
+            db = session_for_environment(environment)
+            try:
+                user_id, _source = fallback_session_user(db)
+                if not user_id:
+                    continue
+                task = AgentTask(
+                    task_type="deliver_png_teams_playwright",
+                    status="pending",
+                    payload_json=json.dumps({
+                        "file_path": result["file_path"],
+                        "file_sha256": result["sha256"],
+                        "chat_name": teams_png_watch.resolve_chat_name(),
+                        "text_message": teams_png_watch.resolve_text_message(result["file_name"]),
+                        "teams_url": settings.TEAMS_WEB_URL,
+                        "headless": settings.PLAYWRIGHT_HEADLESS,
+                    }, ensure_ascii=False),
+                    created_by_id=user_id,
+                    max_attempts=3,
+                )
+                db.add(task)
+                db.commit()
+                print(
+                    f"[teams_png_watch] Task criada (ambiente={environment}, task_id={task.id}) "
+                    f"para enviar {result['file_name']} ao Teams.",
+                    flush=True,
+                )
+                return True
+            finally:
+                db.close()
+
+    print(
+        "[teams_png_watch] PNG novo encontrado, mas nenhum ambiente tem usuario de sessao "
+        "Playground valido para enfileirar a task (fallback_session_user).",
+        flush=True,
+    )
+    return False
+
+
 async def _runner_loop() -> None:
     interval = max(int(settings.SCHEDULE_POLL_INTERVAL_SECONDS or 5), 1)
     while True:
         try:
             await asyncio.to_thread(run_due_schedules_for_all_environments)
+            await asyncio.to_thread(run_due_teams_png_delivery)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.integration import IntegrationConnection, IntegrationDelivery
+from app.models.user import User
+from app.models.agent import AgentTask
+from app.routers.deps import get_current_user
 from app.routers.reports import (
     _render_report_image_threaded,
     compute_card_image_data,
@@ -207,7 +210,13 @@ def send_report_email(report_id: int, data: dict, db: Session = Depends(get_db))
 
 
 @router.post("/reports/{report_id}/teams")
-def send_report_teams(report_id: int, data: dict, request: Request, db: Session = Depends(get_db)):
+def send_report_teams(
+    report_id: int,
+    data: dict,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     bundle = report_delivery_bundle(db, report_id)
     rep = bundle["report"]
     download_url = str(data.get("download_url") or "").strip() or f"{str(request.base_url).rstrip('/')}/api/reports/{report_id}/download"
@@ -215,9 +224,57 @@ def send_report_teams(report_id: int, data: dict, request: Request, db: Session 
 
     target = str(data.get("target") or data.get("channel") or "").strip()
     if not target:
-        target = _teams_default_target()
+        target = settings.TEAMS_DELIVERY_CHAT_NAME if settings.TEAMS_DELIVERY_METHOD == "playwright" else _teams_default_target()
     request_payload = {**data, "content": content, "target": target}
     delivery = _create_delivery(db, "Teams", "report_teams", target, rep.name, request_payload)
+    
+    if settings.TEAMS_DELIVERY_METHOD == "playwright":
+        # Enfileira tarefa para o Agente Local
+        report_path = Path(rep.file_path) if rep.file_path else None
+        pdf_path = None
+        image_path = None
+        if report_path:
+            if report_path.suffix.lower() != ".pdf":
+                possible_pdf = report_path.with_suffix(".pdf")
+                if possible_pdf.exists():
+                    pdf_path = str(possible_pdf)
+            else:
+                pdf_path = str(report_path)
+            
+            possible_png = report_path.with_suffix(".png")
+            if possible_png.exists():
+                image_path = str(possible_png)
+                
+        # Monta a tarefa
+        task = AgentTask(
+            task_type="deliver_report_teams_playwright",
+            status="pending",
+            payload_json=json.dumps({
+                "report_id": report_id,
+                "user_id": current_user.id,
+                "chat_name": target,
+                "teams_url": settings.TEAMS_WEB_URL,
+                "headless": settings.PLAYWRIGHT_HEADLESS,
+                "image_file": image_path,
+                "pdf_file": pdf_path,
+                "text_message": content,
+                "delivery_id": delivery.id,
+            }, ensure_ascii=False),
+            created_by_id=current_user.id,
+            max_attempts=3,
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        
+        # Devolve sucesso informando que a tarefa foi criada
+        return {
+            "status": "task_created",
+            "channel": "teams_playwright",
+            "task_id": task.id,
+            "delivery": _delivery_response(delivery)
+        }
+        
     try:
         if str(settings.MS_GRAPH_TEAMS_WEBHOOK_URL or "").strip():
             result = send_teams_webhook(request_payload, settings)

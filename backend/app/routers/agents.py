@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.agent import AgentTask, LocalAgent
 from app.models.automation import Automation
+from app.models.integration import IntegrationDelivery
 from app.models.file import WorkspaceFile
 from app.models.user import User
 from app.models.workspace import Workspace
@@ -29,6 +30,8 @@ OFFICIAL_TASK_TYPES = {
     "upload_files_to_workspace",
     "monitor_workspace_files_status",
     "convert_and_retry_file",
+    "deliver_report_teams_playwright",
+    "deliver_png_teams_playwright",
 }
 
 AUTOMATION_TASK_TYPES = {
@@ -528,6 +531,26 @@ def complete_task(id: int, data: Optional[dict] = None, db: Session = Depends(ge
         update_workspace_result(db, task, data)
     elif task.task_type in {"upload_files_to_workspace", "monitor_workspace_files_status"}:
         update_files_from_result(db, task, data)
+    
+    # Atualiza a entrega correspondente se houver delivery_id no payload
+    payload = parse_payload(task.payload_json)
+    delivery_id = payload.get("delivery_id")
+    if delivery_id:
+        delivery = db.query(IntegrationDelivery).filter(IntegrationDelivery.id == delivery_id).first()
+        if delivery:
+            delivery.status = "sent"
+            delivery.sent_at = datetime.utcnow()
+            delivery.response_json = encode_json(data.get("result") or data)
+            delivery.updated_at = datetime.utcnow()
+            create_log(
+                db,
+                "info",
+                f"Integration delivery sent via Agent: {delivery.provider} {delivery.delivery_type}",
+                "integration_delivery",
+                delivery.id,
+                metadata={"provider": delivery.provider, "delivery_type": delivery.delivery_type, "target": delivery.target},
+            )
+            
     db.commit()
     automation_id = task_automation_id(task)
 
@@ -625,6 +648,26 @@ def fail_task(id: int, data: dict, db: Session = Depends(get_db)):
         if user:
             user.playground_connected = False
             user.playground_session_path = None
+            
+    # Atualiza a entrega correspondente se houver delivery_id no payload
+    payload = parse_payload(task.payload_json)
+    delivery_id = payload.get("delivery_id")
+    if delivery_id:
+        delivery = db.query(IntegrationDelivery).filter(IntegrationDelivery.id == delivery_id).first()
+        if delivery:
+            delivery.status = "failed"
+            delivery.error_message = task.error_message
+            delivery.failed_at = datetime.utcnow()
+            delivery.response_json = encode_json(data.get("result") or {})
+            delivery.updated_at = datetime.utcnow()
+            create_log(
+                db,
+                "error",
+                f"Integration delivery failed via Agent: {delivery.provider} {delivery.delivery_type}. Error: {task.error_message}",
+                "integration_delivery",
+                delivery.id,
+                metadata={"provider": delivery.provider, "delivery_type": delivery.delivery_type, "target": delivery.target},
+            )
             
     db.commit()
     automation_id = task_automation_id(task)

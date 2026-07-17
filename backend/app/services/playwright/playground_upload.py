@@ -24,6 +24,7 @@ from app.services.playwright.playground_workspace import open_workspace, wait_fo
 from app.services.playwright.selectors import (
     CHOOSE_FILES_TEXTS,
     DISMISS_BANNER_TEXTS,
+    SHOW_MORE_FILES_TEXTS,
     UPLOAD_ACTIVE_TEXTS,
     UPLOAD_COMPLETE_TEXTS,
     UPLOAD_ERROR_TEXTS,
@@ -214,6 +215,31 @@ def choose_files(page, paths: list[str], log: Callable) -> None:
         )
 
 
+def _expand_hidden_file_list(page, log: Callable) -> bool:
+    """Clica em 'Show more files (+N)' (AWS Cloudscape) se presente, revelando na
+    tela/DOM os arquivos anexados que ficam ocultos alem dos 3 primeiros. Sem isso,
+    lotes com mais de 3 arquivos nunca completam a Evidencia 1 de
+    wait_for_selected_files (nomes ocultos nao entram em page_text) e o botao final
+    de submit pode nao habilitar, levando a UploadFailed por timeout mesmo com todos
+    os arquivos realmente anexados (ver screenshot de incidente 2026-07-17).
+
+    Retorna True se algo foi clicado (para nao tentar de novo no mesmo lote: o link
+    normalmente some apos a expansao).
+    """
+    for text in SHOW_MORE_FILES_TEXTS:
+        try:
+            locator = page.get_by_text(re.compile(re.escape(text), re.I))
+            for index in range(locator.count()):
+                candidate = locator.nth(index)
+                if candidate.is_visible(timeout=300):
+                    candidate.click(timeout=1000)
+                    log("info", "Lista de arquivos anexados expandida ('Show more files').")
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 def wait_for_selected_files(page, batch: list[dict[str, Any]], log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
     """Aguarda confirmacao de que os arquivos foram realmente anexados antes do clique final.
 
@@ -231,8 +257,13 @@ def wait_for_selected_files(page, batch: list[dict[str, Any]], log: Callable, sh
     deadline = time.monotonic() + 60
     log("info", "Aguardando arquivos carregarem antes do Upload Files final.", metadata={"files": expected_names})
     button_enabled_since: float | None = None
+    expanded_hidden_list = False
     while time.monotonic() < deadline:
         check_continue(should_continue)
+        # Lotes com >3 arquivos escondem o restante atras de "Show more files (+N)";
+        # expandir cedo garante que os nomes ocultos entrem no page_text abaixo.
+        if not expanded_hidden_list:
+            expanded_hidden_list = _expand_hidden_file_list(page, log)
         body = page_text(page).lower()
         found = [name for name in expected_names if name.lower() in body]
 
@@ -1095,9 +1126,34 @@ def click_final_upload_candidate(locator, log: Callable) -> bool:
     return False
 
 
+def _final_upload_button_present(page) -> bool:
+    """True se algum candidato do SUBMIT final existir no DOM, mesmo que desabilitado.
+
+    Distingue 'botao existe mas ainda desabilitado' (Cloudscape pode validar o lote de
+    forma assincrona antes de habilitar o submit) de 'botao realmente nao encontrado'
+    (mudanca de UI/selector). So no primeiro caso vale a pena esperar mais sem recarregar
+    a pagina — reload descartaria os arquivos ja anexados e confirmados (ver
+    wait_for_selected_files, Evidencia 1).
+    """
+    for factory in final_upload_submit_locators(page):
+        try:
+            if factory().count():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def click_final_upload_with_recovery(page, log: Callable, should_continue: Callable[[], bool] | None = None) -> None:
     last_error = None
-    for attempt in range(1, 6):
+    not_found_attempts = 0
+    # Espera adicional (alem das tentativas normais) para o caso em que o botao existe mas
+    # segue desabilitado — observado em lotes de 4 arquivos, onde o Cloudscape parece levar
+    # mais de alguns segundos para validar o lote antes de habilitar o submit real.
+    disabled_wait_deadline = time.monotonic() + 55
+    attempt = 0
+    while True:
+        attempt += 1
         check_continue(should_continue)
         try:
             # 1) Mira o SUBMIT real primeiro (type=submit exclui a ABA 'Upload Files' e o link do
@@ -1116,29 +1172,38 @@ def click_final_upload_with_recovery(page, log: Callable, should_continue: Calla
                     locator = lookup(text)
                     if click_final_upload_candidate(locator, log):
                         return
+
+            if _final_upload_button_present(page) and time.monotonic() < disabled_wait_deadline:
+                # Botao existe mas ainda desabilitado: os arquivos ja foram confirmados
+                # (Evidencia 1 de wait_for_selected_files), entao NAO recarregamos a pagina —
+                # apenas aguardamos a validacao assincrona do Cloudscape terminar.
+                log("warning", f"Botao final Upload Files ainda desabilitado (aguardando validacao), tentativa {attempt}.")
+                time.sleep(2)
+                continue
+
             raise RecoverableUploadUiError("Botao final Upload Files nao encontrado.")
-        except Exception as exc:
+        except RecoverableUploadUiError as exc:
             last_error = exc
-            if isinstance(exc, RecoverableUploadUiError) and "desabilitado" in str(exc).lower():
-                log("warning", f"Botao final Upload Files desabilitado na tentativa {attempt}.")
-            else:
-                log("warning", f"Botao final Upload Files nao encontrado na tentativa {attempt}.")
+            not_found_attempts += 1
+            log("warning", f"Botao final Upload Files nao encontrado na tentativa {attempt}.")
             try:
                 page.mouse.wheel(0, 600)
             except Exception:
                 pass
             time.sleep(1)
-            if attempt == 3:
+            if not_found_attempts == 3:
                 try:
                     page.keyboard.press("Escape")
                     time.sleep(1)
                 except Exception:
                     pass
-            if attempt == 4:
+            if not_found_attempts == 4:
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=settings.PLAYWRIGHT_DEFAULT_TIMEOUT)
                 except Exception:
                     pass
+            if not_found_attempts >= 5:
+                break
     if isinstance(last_error, RecoverableUploadUiError):
         raise RecoverableUploadUiError(str(last_error) or "Botao final Upload Files nao encontrado.") from last_error
     raise UploadFailed(str(last_error) if last_error else "Falha ao clicar Upload Files final.")

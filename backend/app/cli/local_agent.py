@@ -29,6 +29,12 @@ from app.services.playwright.playground_monitor import monitor_workspace_files_s
 from app.services.playwright.playground_upload import convert_file_to_pdf, convert_to_pdf_in_folder, upload_files_to_workspace
 from app.services.playwright.playground_users import add_playground_user_to_workspace
 from app.services.playwright.playground_workspace import create_playground_workspace
+from app.services.playwright.teams_delivery import (
+    deliver_file_teams_playwright,
+    deliver_report_teams_playwright,
+    TeamsLoginRequired,
+)
+from app.services import teams_png_watch
 
 
 API_BASE_URL = os.getenv("AUTOMATION_HUB_API_URL", "http://127.0.0.1:8000")
@@ -41,6 +47,8 @@ OFFICIAL_TASK_TYPES = {
     "upload_files_to_workspace",
     "monitor_workspace_files_status",
     "convert_and_retry_file",
+    "deliver_report_teams_playwright",
+    "deliver_png_teams_playwright",
 }
 PLAYWRIGHT_TASK_TYPES = set(OFFICIAL_TASK_TYPES)
 FOLDER_REPORT_SOURCE = "folder_monitoring_detection"
@@ -1250,6 +1258,59 @@ def process_convert_retry(session: requests.Session, task: dict[str, Any], paylo
     complete_task(session, task_id, result)
 
 
+def process_teams_delivery(
+    session: requests.Session,
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    user_id: Optional[int],
+    log,
+) -> None:
+    task_id = task["id"]
+    report_id = payload.get("report_id")
+    if not report_id:
+        raise ValueError("deliver_report_teams_playwright exige 'report_id' no payload.")
+    if not user_id:
+        raise ValueError("deliver_report_teams_playwright exige um 'user_id' associado.")
+    
+    result = deliver_report_teams_playwright(
+        report_id=report_id,
+        payload=payload,
+        log=log,
+        task_id=task_id,
+        user_id=user_id
+    )
+    complete_task(session, task_id, result)
+
+
+def process_png_teams_delivery(
+    session: requests.Session,
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    user_id: Optional[int],
+    log,
+) -> None:
+    """Task da automacao 'PNG -> Teams' (ver app/services/teams_png_watch.py): envia um
+    arquivo avulso (payload['file_path']) diretamente para um chat do Teams, sem vinculo com
+    um report_id do HUB. Apos o envio confirmado, marca o arquivo (por sha256) como enviado
+    para nao ser reenviado na proxima checagem de pasta."""
+    task_id = task["id"]
+    if not user_id:
+        raise ValueError("deliver_png_teams_playwright exige um 'user_id' associado.")
+
+    result = deliver_file_teams_playwright(
+        payload=payload,
+        log=log,
+        task_id=task_id,
+        user_id=user_id,
+    )
+
+    file_sha256_value = payload.get("file_sha256")
+    if file_sha256_value:
+        teams_png_watch.mark_png_sent(file_sha256_value, Path(str(payload.get("file_path"))).name)
+
+    complete_task(session, task_id, result)
+
+
 def _dispatch_task_body(
     session: requests.Session,
     task: dict[str, Any],
@@ -1272,6 +1333,10 @@ def _dispatch_task_body(
         process_monitor(session, task, payload, user_id, log)
     elif task_type == "convert_and_retry_file":
         process_convert_retry(session, task, payload, user_id, log)
+    elif task_type == "deliver_report_teams_playwright":
+        process_teams_delivery(session, task, payload, user_id, log)
+    elif task_type == "deliver_png_teams_playwright":
+        process_png_teams_delivery(session, task, payload, user_id, log)
 
 
 def process_task(session: requests.Session, task: dict[str, Any], agent_id: Optional[int]) -> None:
@@ -1295,12 +1360,12 @@ def process_task(session: requests.Session, task: dict[str, Any], agent_id: Opti
         post_json(session, f"/api/agents/tasks/{task_id}/start", {"agent_id": agent_id})
         try:
             _dispatch_task_body(session, task, payload, user_id, log, task_type)
-        except PlaygroundLoginRequired:
+        except (PlaygroundLoginRequired, TeamsLoginRequired):
             if not payload.get("headless"):
                 raise  # ja visivel e login nao concluido -> trata como antes (falha)
             log(
                 "warning",
-                "Login necessario e o navegador estava em modo headless. Reabrindo o Chromium de "
+                "Login necessario no servico e o navegador estava em modo headless. Reabrindo o Chromium de "
                 "forma VISIVEL para login manual e repetindo a tarefa (a tarefa NAO sera finalizada).",
             )
             payload = {**payload, "headless": False}

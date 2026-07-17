@@ -77,6 +77,7 @@ def open_persistent_chromium(
     *,
     headless: Optional[bool] = None,
     browser_channel: Optional[str] = None,
+    session_dir: Optional[Path] = None,
 ) -> PersistentBrowser:
     try:
         from playwright.sync_api import sync_playwright
@@ -86,7 +87,8 @@ def open_persistent_chromium(
             "pip install -r requirements.txt && python -m playwright install chromium"
         ) from exc
 
-    session_dir = session_dir_for_user(user_id)
+    if session_dir is None:
+        session_dir = session_dir_for_user(user_id)
     playwright = sync_playwright().start()
     launch_options = {
         "user_data_dir": str(session_dir),

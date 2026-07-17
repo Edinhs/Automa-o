@@ -202,6 +202,20 @@ CHOOSE_FILES_TEXTS = [
     "Selecionar arquivos",
 ]
 
+# Link/botao que o Playground (AWS Cloudscape) usa para expandir a lista de arquivos
+# ja anexados quando ha mais itens do que cabe na area visivel (ex.: "Show more files
+# (+1)"). Sem expandir, os nomes dos arquivos ocultos nao aparecem no texto da pagina
+# (page_text) e o botao final "Upload files" pode nao habilitar -- ver
+# wait_for_selected_files em playground_upload.py.
+SHOW_MORE_FILES_TEXTS = [
+    "Show more files",
+    "Show more file",
+    "Show more",
+    "Mostrar mais arquivos",
+    "Mostrar mais",
+    "Ver mais arquivos",
+]
+
 # Usado APENAS para detectar que a area de upload ja carregou (gate de prontidao),
 # nao para clicar. E proposital que seja mais amplo que UPLOAD_FILES_TEXTS: o clique
 # de upload continua usando UPLOAD_FILES_TEXTS (preciso), enquanto a deteccao tolera
