@@ -27,8 +27,12 @@ from typing import Any
 from app.core.report_i18n import poster_labels
 
 # Paleta / dimensoes do poster (fiel a identidade Stellantis).
-CARD_WIDTH = 1496
-VIEWPORT = {"width": 1536, "height": 1120}
+# 2026-07-20: aumentado verticalmente (fontes + espacamentos maiores) e depois horizontalmente
+# (largura do card) a pedido -- o `.card` nao tem altura fixa (o screenshot usa
+# elementHandle.screenshot(), que captura o tamanho real do conteudo), entao aumentar
+# fonte/padding/gap/largura ja resulta numa imagem maior automaticamente.
+CARD_WIDTH = 2400
+VIEWPORT = {"width": 2500, "height": 1900}
 DEVICE_SCALE = 2
 
 _CSS = """
@@ -36,74 +40,70 @@ _CSS = """
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #061024; font-family: 'Segoe UI', Arial, sans-serif; }
   .card {
-    width: 1496px; margin: 16px auto; border-radius: 22px; overflow: hidden;
+    width: 2400px; margin: 16px auto; border-radius: 22px; overflow: hidden;
     background: linear-gradient(160deg, #0a1a3f 0%, #0c2150 55%, #0a1836 100%);
-    color: #eaf1ff; padding: 34px 40px 28px;
+    color: #eaf1ff; padding: 46px 48px 40px;
   }
   .topbar { display: flex; justify-content: space-between; align-items: flex-start; }
-  .brand { font-size: 15px; letter-spacing: 3px; color: #7fa8ff; font-weight: 700; }
-  .brand-underline { width: 210px; height: 3px; background: #2f6bff; border-radius: 3px; margin: 8px 0 12px; }
-  .title { font-size: 30px; font-weight: 800; color: #ffffff; letter-spacing: 1px; }
-  .period { font-size: 17px; color: #7fa8ff; font-weight: 600; margin-top: 6px; }
-  .wordmark { font-size: 30px; font-weight: 800; letter-spacing: 6px; color: #ffffff; text-align: right; }
-  .gen-chip { margin-top: 16px; display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 12px 16px; }
-  .gen-chip .ic { width: 40px; height: 40px; border-radius: 10px; background: #14336e; display: grid; place-items: center; font-size: 20px; }
-  .gen-chip .txt { font-size: 13px; color: #c4d4f2; line-height: 1.35; }
+  .brand { font-size: 23px; letter-spacing: 3px; color: #7fa8ff; font-weight: 700; }
+  .brand-underline { width: 260px; height: 5px; background: #2f6bff; border-radius: 3px; margin: 12px 0 16px; }
+  .title { font-size: 46px; font-weight: 800; color: #ffffff; letter-spacing: 1px; }
+  .period { font-size: 25px; color: #7fa8ff; font-weight: 600; margin-top: 10px; }
+  .wordmark { font-size: 46px; font-weight: 800; letter-spacing: 6px; color: #ffffff; text-align: right; }
+  .gen-chip { margin-top: 22px; display: flex; align-items: center; gap: 16px; background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 18px 24px; }
+  .gen-chip .ic { width: 56px; height: 56px; border-radius: 10px; background: #14336e; display: grid; place-items: center; font-size: 28px; }
+  .gen-chip .txt { font-size: 18px; color: #c4d4f2; line-height: 1.4; }
   .gen-chip b { color: #fff; }
 
   /* 1) Convite (manchete) — painel claro para saltar aos olhos como o gancho principal. */
-  .hero { margin: 24px 0 22px; background: #f4f7fc; border-radius: 20px; padding: 30px 34px; color: #0b1f45; }
-  .hero-badge { display: inline-block; font-size: 12px; letter-spacing: 2px; font-weight: 800; text-transform: uppercase;
-    color: #2f6bff; background: #e5edff; border-radius: 999px; padding: 6px 14px; }
-  .hero h1 { font-size: 40px; line-height: 1.12; font-weight: 800; color: #0b1f45; margin: 14px 0 12px; letter-spacing: 0.3px; }
-  .hero p { font-size: 18px; line-height: 1.55; color: #33436a; max-width: 1080px; }
-  .hero .access { margin-top: 14px; font-size: 15px; color: #5b6b86; font-weight: 600; }
-  .cta { display: flex; gap: 12px; margin-top: 22px; }
-  .cta .btn { font-size: 16px; font-weight: 700; border-radius: 12px; padding: 14px 26px; }
-  .cta .solid { background: #2f6bff; color: #fff; }
-  .cta .ghost { background: transparent; border: 1.5px solid #2f6bff; color: #2f6bff; }
+  .hero { margin: 32px 0 30px; background: #f4f7fc; border-radius: 20px; padding: 42px 46px; color: #0b1f45; }
+  .hero-badge { display: inline-block; font-size: 17px; letter-spacing: 2px; font-weight: 800; text-transform: uppercase;
+    color: #2f6bff; background: #e5edff; border-radius: 999px; padding: 9px 18px; }
+  .hero h1 { font-size: 64px; line-height: 1.18; font-weight: 800; color: #0b1f45; margin: 20px 0 18px; letter-spacing: 0.3px; }
+  .hero p { font-size: 27px; line-height: 1.6; color: #33436a; max-width: 1900px; }
+  .hero .access { margin-top: 20px; font-size: 21px; color: #5b6b86; font-weight: 600; }
 
   /* 2) Tempo devolvido — a prova de valor. */
-  .proof { display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; }
-  .panel { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 22px 24px; }
-  .panel h3 { font-size: 14px; letter-spacing: 1.5px; color: #cfe0ff; font-weight: 800; text-transform: uppercase;
-    display: flex; align-items: center; gap: 10px; }
-  .panel h3 .ic { width: 30px; height: 30px; border-radius: 8px; background: #14336e; display: grid; place-items: center; font-size: 15px; }
-  .hours-grid { display: flex; gap: 16px; margin-top: 18px; }
-  .hstat { flex: 1; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px 20px; }
-  .hstat .num { font-size: 46px; font-weight: 800; color: #ffffff; line-height: 1; }
-  .hstat .lbl { font-size: 14px; color: #9fb3d8; margin-top: 8px; }
+  .proof { display: grid; grid-template-columns: 1.05fr 1fr; gap: 24px; margin-top: 4px; }
+  .panel { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 32px 34px; }
+  .panel h3 { font-size: 20px; letter-spacing: 1.5px; color: #cfe0ff; font-weight: 800; text-transform: uppercase;
+    display: flex; align-items: center; gap: 14px; }
+  .panel h3 .ic { width: 42px; height: 42px; border-radius: 8px; background: #14336e; display: grid; place-items: center; font-size: 20px; }
+  .hours-grid { display: flex; gap: 22px; margin-top: 24px; }
+  .hstat { flex: 1; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 26px 30px; }
+  .hstat .num { font-size: 70px; font-weight: 800; color: #ffffff; line-height: 1; }
+  .hstat .lbl { font-size: 20px; color: #9fb3d8; margin-top: 12px; }
   .hstat.week .num { color: #6ee7a8; }
-  .proof-note { font-size: 13.5px; color: #9fb3d8; margin-top: 16px; line-height: 1.45; }
-  .chart { margin-top: 10px; background: rgba(255,255,255,0.04); border-radius: 12px; padding: 12px 10px 6px; }
-  .chart .ct { font-size: 11px; letter-spacing: 1px; color: #8aa0c8; text-align: center; text-transform: uppercase; margin-bottom: 6px; }
+  .proof-note { font-size: 18px; color: #9fb3d8; margin-top: 22px; line-height: 1.5; }
+  .chart { margin-top: 16px; background: rgba(255,255,255,0.04); border-radius: 12px; padding: 18px 16px 10px; }
+  .chart .ct { font-size: 15px; letter-spacing: 1px; color: #8aa0c8; text-align: center; text-transform: uppercase; margin-bottom: 10px; }
 
   /* 3) Adocao — dois cartoes de numero. */
-  .adopt { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
-  .astat { display: flex; align-items: center; gap: 18px; background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 20px 24px; }
-  .astat .ic { width: 60px; height: 60px; border-radius: 16px; background: #14336e; display: grid; place-items: center; font-size: 26px; flex: 0 0 auto; }
-  .astat .num { font-size: 40px; font-weight: 800; color: #ffffff; line-height: 1; }
-  .astat .lbl { font-size: 15px; color: #9fb3d8; margin-top: 6px; }
+  .adopt { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; }
+  .astat { display: flex; align-items: center; gap: 22px; background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 30px 34px; }
+  .astat .ic { width: 84px; height: 84px; border-radius: 16px; background: #14336e; display: grid; place-items: center; font-size: 36px; flex: 0 0 auto; }
+  .astat .num { font-size: 60px; font-weight: 800; color: #ffffff; line-height: 1; }
+  .astat .lbl { font-size: 21px; color: #9fb3d8; margin-top: 10px; }
 
   /* 4) Saude — uma linha. */
-  .health { margin-top: 18px; border-radius: 14px; padding: 16px 22px; font-size: 16px; font-weight: 600;
-    display: flex; align-items: center; gap: 12px; }
+  .health { margin-top: 24px; border-radius: 14px; padding: 24px 32px; font-size: 23px; font-weight: 600;
+    display: flex; align-items: center; gap: 16px; }
   .health.ok { background: rgba(22,163,74,0.14); border: 1px solid rgba(22,163,74,0.35); color: #b7f7cf; }
   .health.warn { background: rgba(245,158,11,0.14); border: 1px solid rgba(245,158,11,0.35); color: #fde3ac; }
-  .health .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
+  .health .dot { width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto; }
   .health.ok .dot { background: #16a34a; } .health.warn .dot { background: #f59e0b; }
 
-  .footer { display: flex; align-items: center; gap: 18px; margin-top: 24px; padding-top: 18px;
-    border-top: 1px solid rgba(255,255,255,0.10); font-size: 13px; color: #9fb3d8; }
-  .footer .fic { width: 42px; height: 42px; border-radius: 50%; background: #14336e; display: grid; place-items: center; font-size: 18px; flex: 0 0 auto; }
-  .footer .fword { margin-left: auto; font-size: 18px; font-weight: 800; letter-spacing: 5px; color: #dbe6fb; }
+  .footer { display: flex; align-items: center; gap: 22px; margin-top: 30px; padding-top: 24px;
+    border-top: 1px solid rgba(255,255,255,0.10); font-size: 19px; color: #9fb3d8; }
+  .footer .fic { width: 56px; height: 56px; border-radius: 50%; background: #14336e; display: grid; place-items: center; font-size: 24px; flex: 0 0 auto; }
+  .footer .fword { margin-left: auto; font-size: 25px; font-weight: 800; letter-spacing: 5px; color: #dbe6fb; }
 </style>
 """
 
 
-def _svg_line_chart(series: list[dict[str, Any]], width: int = 560, height: int = 200, pad: int = 32) -> str:
+def _svg_line_chart(series: list[dict[str, Any]], width: int = 560, height: int = 280, pad: int = 40) -> str:
     """Grafico de linha (SVG inline, offline) a partir da serie cumulativa diaria."""
     if not series:
         return ""
@@ -126,7 +126,7 @@ def _svg_line_chart(series: list[dict[str, Any]], width: int = 560, height: int 
         + " ".join(f"L {x:.1f},{y:.1f}" for x, y in pts)
         + f" L {pts[-1][0]:.1f},{height - pad:.1f} Z"
     )
-    circles = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="#2f6bff"/>' for x, y in pts)
+    circles = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#2f6bff"/>' for x, y in pts)
     # Em semanas de volume baixo (poucas horas) os rotulos inteiros colapsam (ex.: "4/4/3");
     # usa 1 casa decimal (pt-BR) quando a escala e pequena, inteiro quando ja e grande.
     axis_decimals = 1 if vmax < 20 else 0
@@ -139,9 +139,9 @@ def _svg_line_chart(series: list[dict[str, Any]], width: int = 560, height: int 
         v = vmin + span * frac
         yy = pad + plot_h * (1 - frac)
         grid += f'<line x1="{pad}" y1="{yy:.1f}" x2="{width - pad}" y2="{yy:.1f}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>'
-        grid += f'<text x="{pad - 8}" y="{yy + 4:.1f}" font-size="11" fill="#8aa0c8" text-anchor="end">{_axis_label(v)}</text>'
+        grid += f'<text x="{pad - 8}" y="{yy + 4:.1f}" font-size="16" fill="#8aa0c8" text-anchor="end">{_axis_label(v)}</text>'
     xlabels = "".join(
-        f'<text x="{x_at(i):.1f}" y="{height - 8}" font-size="11" fill="#8aa0c8" text-anchor="middle">{escape(str(series[i].get("label", "")))}</text>'
+        f'<text x="{x_at(i):.1f}" y="{height - 8}" font-size="16" fill="#8aa0c8" text-anchor="middle">{escape(str(series[i].get("label", "")))}</text>'
         for i in range(n)
     )
     return (
@@ -203,10 +203,6 @@ def build_report_image_html(data: dict[str, Any]) -> str:
     <h1>{escape(str(data.get("headline", "Seu ambiente já está pronto — entre e crie seu agente")))}</h1>
     <p>{escape(str(data.get("invite_body", "")))}</p>
     <div class="access">{escape(str(data.get("access_line", "")))}</div>
-    <div class="cta">
-      <div class="btn solid">{L["cta_playground"]}</div>
-      <div class="btn ghost">{L["cta_download"]}</div>
-    </div>
   </div>
 
   <div class="proof">

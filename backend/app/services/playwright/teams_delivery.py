@@ -157,6 +157,59 @@ def navigate_to_chat(page, chat_name: str, log: Callable) -> None:
     time.sleep(3)
 
 
+def attach_files_via_picker(page, attachment_paths: list[str], log: Callable) -> None:
+    """Anexa arquivos locais a mensagem usando o botao real 'Anexar arquivos' do Teams Web.
+
+    Calibrado ao vivo em 2026-07-20: NAO existe `input[type="file"]` no DOM ate o usuario
+    interagir com o menu de anexo. O fluxo real e:
+      1. Clicar no botao `[data-tid="sendMessageCommands-FilePicker"]` (aria-label
+         "Anexar arquivos") -- abre um menu com "Anexar arquivos da nuvem" e
+         "Carregar deste dispositivo".
+      2. Clicar em "Carregar deste dispositivo" -- isso dispara o dialogo NATIVO do
+         Windows, interceptado aqui via `page.expect_file_chooser()` (sem abrir UI real).
+      3. `file_chooser.set_files(...)` injeta os caminhos locais no dialogo interceptado.
+      4. Aguarda o nome do arquivo aparecer como preview na caixa de composicao antes de
+         prosseguir -- so assim o anexo e considerado confirmado (evita "sucesso" falso
+         quando o Teams silenciosamente ignora o anexo).
+
+    Lanca TeamsDeliveryError se o botao/menu nao forem encontrados ou se o preview do
+    anexo nao aparecer -- APOS uma falha aqui, o chamador NAO deve reportar a task como
+    bem-sucedida so com o texto (isso mascarava o problema antes desta calibracao).
+    """
+    attach_button = page.locator('[data-tid="sendMessageCommands-FilePicker"]')
+    if attach_button.count() == 0:
+        attach_button = page.locator('button[aria-label="Anexar arquivos"], button[aria-label="Attach files"]')
+    if attach_button.count() == 0:
+        raise TeamsDeliveryError("Botao 'Anexar arquivos' nao encontrado no Teams Web.")
+
+    try:
+        with page.expect_file_chooser(timeout=10000) as fc_info:
+            attach_button.first.click(timeout=5000)
+            time.sleep(1)
+            upload_item = page.get_by_text("Carregar deste dispositivo", exact=False)
+            if upload_item.count() == 0:
+                upload_item = page.get_by_text("Upload from this device", exact=False)
+            upload_item.first.click(timeout=5000)
+        file_chooser = fc_info.value
+    except Exception as exc:
+        raise TeamsDeliveryError(f"Nao foi possivel abrir o seletor de arquivos do Teams: {exc}") from exc
+
+    file_chooser.set_files(attachment_paths)
+    log("info", f"Arquivo(s) enviado(s) ao seletor nativo: {[Path(p).name for p in attachment_paths]}")
+
+    # Confirma que o anexo realmente apareceu no preview da composicao (nao so que o
+    # dialogo foi aceito) antes de considerar o anexo bem-sucedido.
+    for file_path in attachment_paths:
+        file_name = Path(file_path).name
+        try:
+            page.get_by_text(file_name, exact=False).first.wait_for(state="visible", timeout=20000)
+            log("info", f"Anexo confirmado no preview da composicao: {file_name}")
+        except Exception as exc:
+            raise TeamsDeliveryError(
+                f"Anexo '{file_name}' nao apareceu no preview da composicao apos o upload."
+            ) from exc
+
+
 def send_message_with_attachments(
     page,
     text_message: str,
@@ -215,20 +268,14 @@ def send_message_with_attachments(
         textbox.type(text_message, delay=10)
     time.sleep(2)
 
-    # Upload de anexos
+    # Upload de anexos — usa o fluxo real do botao "Anexar arquivos" (ver
+    # attach_files_via_picker). Se algum anexo for solicitado e falhar, a task FALHA
+    # (nao envia so o texto silenciosamente) para nao mascarar o problema.
     valid_attachments = [p for p in attachment_paths if p and Path(p).exists()]
     if valid_attachments:
         log("info", f"Fazendo upload de {len(valid_attachments)} arquivo(s).")
-        try:
-            file_input = page.locator('input[type="file"]')
-            if file_input.count() > 0:
-                file_input.first.set_input_files(valid_attachments)
-                log("info", "Arquivos anexados via set_input_files.")
-                time.sleep(10)
-            else:
-                log("warning", "input[type='file'] nao encontrado. Ignorando anexos.")
-        except Exception as exc:
-            log("warning", f"Erro ao anexar arquivos: {exc}. Enviando apenas texto.")
+        attach_files_via_picker(page, valid_attachments, log)
+        time.sleep(3)
 
     # Botao Enviar — calibrado para Teams PT-BR 2026-07-17
     send_selectors = [

@@ -51,6 +51,7 @@ from app.routers.executions import (
     task_workspace_id,
 )
 from app.services.audit import create_log
+from app.services.access_requests import get_engineers_count
 
 router = APIRouter()
 
@@ -962,8 +963,9 @@ def compute_card_business(db: Session, now: datetime | None = None) -> dict[str,
 
     - Horas: arquivos enviados ao workspace x REPORT_MINUTES_PER_FILE (minutos -> horas).
       "Semana" = ultimos 7 dias (janela propria, sempre verdadeira); "Acumulado" = all-time.
-    - Engenheiros: network_id distintos que receberam acesso (tarefas add_playground_user_to_workspace
-      concluidas).
+    - Engenheiros: solicitantes unicos da lista SharePoint de pedidos de acesso (coluna IDRede,
+      trim + case-insensitive), com fallback gracioso para o count local de tarefas
+      add_playground_user_to_workspace concluidas se a lista nao puder ser lida.
     - SPECs prontas + saude: reutiliza a classificacao por workspace de block_simplificado (all-time).
     """
     now_utc = now or datetime.utcnow()
@@ -980,19 +982,7 @@ def compute_card_business(db: Session, now: datetime | None = None) -> dict[str,
         func.coalesce(WorkspaceFile.uploaded_at, WorkspaceFile.created_at) >= week_start,
     ).scalar() or 0
 
-    engineers: set[str] = set()
-    for (payload_json,) in db.query(AgentTask.payload_json).filter(
-        AgentTask.is_deleted == False,
-        AgentTask.task_type == "add_playground_user_to_workspace",
-        AgentTask.status == "completed",
-    ).all():
-        try:
-            payload = json.loads(payload_json or "{}")
-        except (ValueError, TypeError):
-            continue
-        nid = str(payload.get("network_id") or payload.get("user_identifier") or "").strip().upper()
-        if nid:
-            engineers.add(nid)
+    engineers_count = get_engineers_count(db, now=now_utc)
 
     all_time = {"start": None, "end": None, "automation_id": None, "workspace_id": None, "status": None, "source_task_id": None}
     simpl = block_simplificado(db, all_time, ({}, {}))
@@ -1007,7 +997,7 @@ def compute_card_business(db: Session, now: datetime | None = None) -> dict[str,
             "files_total": int(files_total),
             "minutes_per_file": minutes_per_file,
         },
-        "adoption": {"engineers": len(engineers), "specs_ready": specs_ready},
+        "adoption": {"engineers": engineers_count, "specs_ready": specs_ready},
         "health": {"items": health_items},
     }
 
@@ -1111,7 +1101,6 @@ def build_card_summary(report_type: str, sections: list[ReportSection], rep: Exe
         card["headline"] = cs["headline"]
         card["invite_body"] = cs["invite_body"]
         card["access_line"] = cs["access_line"]
-        card["access_url"] = str(settings.REPORT_CARD_ACCESS_URL or "").strip()
         card["hours"] = business.get("hours", {})
         card["adoption"] = business.get("adoption", {})
         card["health"] = business.get("health", {})
@@ -1251,10 +1240,15 @@ def build_adoption_card(card: dict[str, Any]) -> dict[str, Any]:
     body.append({"type": "TextBlock", "text": cs["period"].format(v=card.get('period', '')), "isSubtle": True, "wrap": True, "spacing": "Small", "size": "Small"})
     body.append({"type": "TextBlock", "text": cs["generated"].format(v=card.get('generated_at', '')), "isSubtle": True, "wrap": True, "spacing": "None", "size": "Small"})
 
-    actions: list[dict[str, Any]] = [
-        build_access_request_showcard(language),
-        {"type": "Action.OpenUrl", "title": cs["view_details_pdf"], "url": DOWNLOAD_URL_PLACEHOLDER},
-    ]
+    actions: list[dict[str, Any]] = []
+    if str(card.get("access_url") or "").strip():
+        actions.append(
+            build_access_request_showcard(
+                language,
+                title_override="Solicitar acesso" if language == "pt" else None,
+            )
+        )
+    actions.append({"type": "Action.OpenUrl", "title": cs["view_details_pdf"], "url": DOWNLOAD_URL_PLACEHOLDER})
 
     return {
         "type": "AdaptiveCard",
@@ -1266,7 +1260,11 @@ def build_adoption_card(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_access_request_showcard(language: str = DEFAULT_LANGUAGE) -> dict[str, Any]:
+def build_access_request_showcard(
+    language: str = DEFAULT_LANGUAGE,
+    *,
+    title_override: str | None = None,
+) -> dict[str, Any]:
     """Sub-card (Action.ShowCard) do formulario de solicitacao de acesso, revelado inline no
     proprio card semanal — sem navegar para fora do Teams e sem precisar de um 2o fluxo/Run.
 
@@ -1277,7 +1275,7 @@ def build_access_request_showcard(language: str = DEFAULT_LANGUAGE) -> dict[str,
     cs = card_strings(language)
     return {
         "type": "Action.ShowCard",
-        "title": cs["request_access"],
+        "title": title_override or cs["request_access"],
         "card": {
             "type": "AdaptiveCard",
             "body": [
@@ -1321,10 +1319,12 @@ def build_report_image_card(
     """
     cs = card_strings(language)
     playground_url = str(settings.REPORT_CARD_PLAYGROUND_URL or settings.PLAYGROUND_URL or "").strip()
+    access_url = str(settings.REPORT_CARD_ACCESS_URL or "").strip()
     actions: list[dict[str, Any]] = []
     if playground_url:
         actions.append({"type": "Action.OpenUrl", "title": cs["open_playground"], "url": playground_url})
-    actions.append(build_access_request_showcard(language))
+    if access_url:
+        actions.append(build_access_request_showcard(language))
     actions.append({"type": "Action.OpenUrl", "title": cs["download_pdf"], "url": download_placeholder})
     return {
         "type": "AdaptiveCard",
@@ -1430,6 +1430,8 @@ def report_delivery_bundle(db: Session, report_id: int) -> dict[str, Any]:
     sections = build_sections(db, report_type, filters, language)
     business = compute_card_business(db)
     card = build_card_summary(report_type, sections, rep, filters, business=business, language=language)
+    if card.get("kind") == "adoption":
+        card["access_url"] = str(settings.REPORT_CARD_ACCESS_URL or "").strip()
     adaptive_card = build_adaptive_card(card)
     # Card-imagem (PNG fiel ao mockup) so no relatorio de adocao/simplificado (o do card semanal).
     image_data = compute_card_image_data(db, language=language) if card.get("kind") == "adoption" else None

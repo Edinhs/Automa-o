@@ -70,7 +70,14 @@ class Settings(BaseSettings):
     TEAMS_DELIVERY_METHOD: str = "playwright"
     AGENT_SHARED_TOKEN: str = "local-dev-agent-token"
     AGENT_POLL_INTERVAL_SECONDS: int = 5
-    PLAYWRIGHT_HEADLESS: bool = False
+    # Padrao invisivel: todas as automacoes Playwright (Playground + Teams) rodam headless.
+    # Quando uma sessao persistida (BROWSER_SESSION_PATH/TEAMS_BROWSER_SESSION_PATH) expira ou
+    # nunca foi autenticada, o agente local detecta o login pendente (PlaygroundLoginRequired /
+    # TeamsLoginRequired) e reabre o MESMO Chromium de forma VISIVEL uma unica vez, para o login
+    # manual (SSO corporativo) -- e a task e repetida automaticamente apos o login. Feito isso, a
+    # sessao fica salva no perfil e as proximas execucoes voltam a ser 100% invisiveis. Ver
+    # cli/local_agent.py::process_task (retry headed) e GUIA_POWER_AUTOMATE.md, Parte V.
+    PLAYWRIGHT_HEADLESS: bool = True
     MANUAL_LOGIN_TIMEOUT_MINUTES: int = 10
     PLAYWRIGHT_DEFAULT_TIMEOUT: int = 30000
     WORKSPACE_AREA_TIMEOUT_MS: int = 30000
@@ -126,6 +133,10 @@ class Settings(BaseSettings):
     REPORT_CARD_ACCESS_URL: str = ""
     # URL do botao "Abrir Playground" no Adaptive Card semanal. Vazio = usa PLAYGROUND_URL.
     REPORT_CARD_PLAYGROUND_URL: str = ""
+    # Lista SharePoint usada para contar solicitantes unicos de acesso ao workspace no card semanal.
+    REPORT_ACCESS_REQUESTS_LIST_URL: str = "https://shiftup.sharepoint.com/sites/StellantisAutomationHub/Lists/Solicitaes%20de%20Acesso%20a%20Workspace/AllItems.aspx"
+    REPORT_ACCESS_REQUESTS_COLUMN: str = "IDRede"
+    REPORT_ENGINEERS_CACHE_MINUTES: int = 30
     # URL base HTTP do proprio backend, alcancavel pelo Teams (ex.: http://10.x.x.x:8000 ou um
     # hostname interno). Quando preenchida, o sidecar do relatorio semanal grava links DIRETOS
     # para a imagem (/api/reports/{id}/image) e o PDF (/api/reports/{id}/download) do proprio

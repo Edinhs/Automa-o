@@ -7,7 +7,8 @@ test_report_teams_card.py -- Testes deterministicos (sem DB/navegador) do card s
   2. build_adaptive_card -> Adaptive Card 1.4 com 2 FactSets, botoes "Solicitar acesso"(quando
      access_url setado) + "Ver detalhes (PDF)", e sem previa SPEC-por-SPEC.
   3. build_report_image_card -> card com 1 Image (PNG) + botoes [Abrir Playground, Solicitar Acesso,
-     Baixar Relatorio (PDF)]; build_report_image_html/_svg_line_chart -> poster HTML/SVG offline.
+     Baixar Relatorio (PDF)]; build_report_image_html/_svg_line_chart -> poster HTML/SVG offline,
+     sem CTAs visuais embutidos no PNG.
   4. _format_hours (minutos->horas) e o fallback de "Periodo" (nunca em branco).
   5. write_report_to_delivery_folder -> grava relatorio + PDF companheiro + sidecar '*.meta.json';
      com image_data e PNG gerado -> card-imagem + image_file; senao -> fallback card-texto de adocao.
@@ -173,18 +174,26 @@ def test_image_html_and_chart_offline() -> None:
     assert svg.startswith("<svg") and "polyline" in svg, "SVG do grafico invalido"
     html = build_report_image_html(data)
     assert html.lstrip().lower().startswith("<!doctype html"), "HTML sem doctype"
-    # Poster na ordem do convite: manchete -> horas -> adocao -> saude (+ CTA do Playground).
+    # Poster na ordem do convite: manchete -> horas -> adocao -> saude.
     for needle in (
         "crie seu agente", "Tempo devolvido ao time", "11,3 h", "42,5 h",
         "Engenheiros já usando", "SPECs prontas no ambiente", "em tratamento",
-        "previsão de correção", "Abrir Playground",
+        "previsão de correção",
     ):
         assert needle in html, f"faltou '{needle}' no HTML do poster"
     # O que saiu de cena: KPI de contagem de arquivos, tabela SPEC-por-SPEC e workspaces.
-    for gone in ("SPEC_341", "Arquivos Processados", "Workspaces Disponíveis", "table"):
+    for gone in ("SPEC_341", "Arquivos Processados", "Workspaces Disponíveis", "table", "Abrir Playground", "Baixar Relatório (PDF)"):
         assert gone not in html, f"'{gone}' nao deveria mais aparecer no poster-convite"
     assert "<script" not in html.lower(), "poster deve ser 100% offline (sem <script>)"
     print("[PASS] build_report_image_html + _svg_line_chart -> poster-convite (horas/adocao/saude), sem tabela")
+
+
+def test_count_unique_requesters() -> None:
+    from app.services.access_requests import count_unique_requesters
+
+    assert count_unique_requesters([" TA25413 ", "ta25413", "", "  ", None, "AbC123", "abc123", "ZX9"]) == 3
+    assert count_unique_requesters([]) == 0
+    print("[PASS] count_unique_requesters -> trim + case-insensitive + ignora vazios")
 
 
 def test_adoption_card_health_and_logo() -> None:
@@ -334,6 +343,7 @@ if __name__ == "__main__":
     test_adoption_card_shape()
     test_image_card_shape()
     test_image_html_and_chart_offline()
+    test_count_unique_requesters()
     test_adoption_card_health_and_logo()
     test_minutes_to_hours()
     test_period_fallback()

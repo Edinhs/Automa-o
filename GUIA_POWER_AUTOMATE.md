@@ -17,6 +17,7 @@ O que dá para montar (cada parte é independente):
 2. **Parte II — Convite "Solicitar acesso" (legado/fallback):** versão antiga, de quando o botão de acesso ia numa mensagem separada *depois* do card. Hoje o botão já mora dentro do card (Apêndice H) — mantida só como referência.
 3. **Parte III — Formulário de Solicitação de Acesso:** self-service (Adaptive Card → **Lista do SharePoint** + aviso ao aprovador), sem mensagem manual.
 4. **Parte IV — Alternativas:** entrega por **e-mail**, por **canal do Teams**, ou o **botão manual** do dashboard (sem Power Automate).
+5. **Parte V — Automação "PNG → Teams" (sem Power Automate):** o próprio HUB, via Playwright, detecta um PNG **novo** numa pasta vigiada e o envia **direto** para um chat/grupo do Teams — de forma **invisível** (headless), reutilizando a **mesma conta Microsoft/SSO já usada no Playground**; só abre uma janela visível quando um login manual é realmente necessário.
 
 ```
 Parte I:   HUB gera relatório ─▶ pasta OneDrive (relatório + .pdf + .png + .meta.json) ─▶ Power Automate
@@ -24,6 +25,8 @@ Parte I:   HUB gera relatório ─▶ pasta OneDrive (relatório + .pdf + .png +
               2) posta 1 card = imagem-CONVITE + 3 botões (Playground / Acesso / PDF)
 Parte II:  (legado) mensagem separada de "Solicitar acesso" pós-card — não é mais necessária
 Parte III: colaborador roda o fluxo ─▶ Adaptive Card (form) ─▶ Lista do SharePoint + aviso ao aprovador
+Parte V:   pasta vigiada (TEAMS_PNG_WATCH_FOLDER) ─▶ HUB detecta PNG novo (sha256) ─▶
+              Playwright headless entra no Teams Web (sessão já logada) ─▶ envia o PNG ao chat
 ```
 
 ---
@@ -375,6 +378,68 @@ Cada relatório em **Relatórios** tem o botão **Teams**: ele **baixa** o relat
 
 ### IV.4 — Roteamento dinâmico pelo sidecar (Parte I)
 Como o gatilho já é o `.meta.json` e você já fez o Parse JSON, use os campos `email_to` / `teams_channel` / `subject` (quando presentes) direto nas ações de envio. Eles só aparecem quando o relatório é enviado pelo endpoint manual `POST /api/integrations/reports/{id}/deliver-folder` com esses campos.
+
+---
+
+# Parte V — Automação "PNG → Teams" (sem Power Automate)
+
+**O que é:** diferente das Partes I–IV (que dependem de um fluxo do Power Automate), esta automação é **100% interna ao HUB**: um robô Playwright abre o **Teams Web** sozinho, encontra o chat/grupo configurado e envia o **PNG mais recente** de uma pasta vigiada — sem precisar de OneDrive sincronizado, sem fluxo no Power Automate e sem `.meta.json`. É o mecanismo mais simples dos cinco: "aparece um PNG novo na pasta → o HUB manda".
+
+**Resultado:** invisível no dia a dia (não abre nenhuma janela) — só abre um navegador **visível** na primeira vez, ou sempre que a sessão salva expirar, para você fazer o login manual (a mesma conta Microsoft usada no Playground). Depois do login, a sessão fica salva e as próximas execuções voltam a ser 100% invisíveis.
+
+### Como funciona (em 1 parágrafo)
+O backend do HUB verifica periodicamente (ou num dia/hora fixo) a pasta configurada em `TEAMS_PNG_WATCH_FOLDER`. Se houver um `.png` cujo **conteúdo** (hash SHA-256, não o nome) ainda não foi enviado, ele enfileira uma tarefa `deliver_png_teams_playwright` para o **agente local** (o mesmo processo que já dirige o Playground). O agente abre um Chromium com um **perfil de navegador próprio e persistente** (`TEAMS_BROWSER_SESSION_PATH`), acessa `teams.microsoft.com`, localiza o chat pelo nome configurado, anexa o PNG e envia a mensagem. Só então o arquivo é marcado como "já enviado" — se o envio falhar, ele tenta de novo na próxima checagem, nunca reenvia um arquivo que já foi confirmado.
+
+### V.1 — Passo a passo do fluxo interno
+
+1. **Detecção (backend, a cada checagem):** `app/services/teams_png_watch.py` lista os `.png` de `TEAMS_PNG_WATCH_FOLDER` e pega o mais recente por data de modificação.
+2. **Dedup por conteúdo:** calcula o SHA-256 do arquivo e compara com o último hash enviado (guardado em `backend/data/teams_png_delivery_state.json`). Hash igual → não faz nada (evita reenviar o mesmo relatório várias vezes só porque a checagem rodou de novo).
+3. **Fila da tarefa:** se o hash é novo, o `schedule_runner.py` cria a tarefa `deliver_png_teams_playwright` para o **mesmo usuário que já está conectado ao Playground** (`fallback_session_user` — por isso não é preciso configurar uma conta separada para o Teams: é sempre a identidade corporativa já usada no HUB).
+4. **Execução (agente local):** o agente pega a tarefa na próxima vez que consultar o backend (`POST /api/agents/poll`), abre o Chromium com o perfil `TEAMS_BROWSER_SESSION_PATH` e roda `app/services/playwright/teams_delivery.py::deliver_file_teams_playwright`.
+5. **Login (só quando necessário):** o robô confere se a sessão salva do Teams ainda está logada (`is_teams_logged_in`). Se estiver, segue **invisível** (headless). Se **não** estiver (primeira vez, ou sessão expirada), ele avisa o agente, que reabre o **mesmo** Chromium de forma **visível** uma única vez, aguarda você concluir o login SSO (a mesma conta Microsoft do Playground) e repete a tarefa automaticamente — sem precisar reiniciar nada.
+6. **Envio:** localiza o chat pelo nome (`TEAMS_PNG_DELIVERY_CHAT_NAME`), anexa o PNG pelo seletor real de "Anexar arquivos" do Teams Web e clica em Enviar. Só confirma sucesso quando o anexo aparece de fato na composição da mensagem (evita "sucesso" falso).
+7. **Confirmação:** o agente informa o backend que a tarefa terminou; o hash do PNG enviado é gravado — esse mesmo arquivo nunca mais é reenviado, mesmo que ele continue sendo o "mais recente" da pasta.
+
+### V.2 — Configuração (`backend\.env`)
+
+| Variável | Para que serve | Padrão |
+|---|---|---|
+| `TEAMS_PNG_DELIVERY_ENABLED` | Liga/desliga a automação inteira. | `false` |
+| `TEAMS_PNG_WATCH_FOLDER` | Pasta local vigiada (pode ser a mesma pasta de saída do gerador de relatório/PNG). | *(vazio)* |
+| `TEAMS_PNG_DELIVERY_CHAT_NAME` | Nome exato do chat/grupo de destino no Teams. Vazio = usa `TEAMS_DELIVERY_CHAT_NAME`. | *(vazio)* |
+| `TEAMS_PNG_DELIVERY_TEXT` | Texto da mensagem enviada junto com o PNG. Vazio = mensagem padrão com o nome do arquivo. | *(vazio)* |
+| `TEAMS_PNG_DELIVERY_MODE` | `schedule` = só verifica no dia/hora fixos abaixo; `continuous` = verifica a cada N segundos, qualquer dia. | `schedule` |
+| `TEAMS_PNG_DELIVERY_DAY_OF_WEEK` / `TEAMS_PNG_DELIVERY_TIME` | Dia/hora fixos (modo `schedule`). | `monday` / `09:00` |
+| `TEAMS_PNG_DELIVERY_POLL_INTERVAL_SECONDS` | Intervalo entre checagens (modo `continuous`). | `300` |
+| `TEAMS_BROWSER_SESSION_PATH` | Pasta do **perfil de navegador persistente** do Teams (guarda o login entre execuções — não apagar). | `./data/browser_session_teams` |
+| `PLAYWRIGHT_HEADLESS` | `true` = invisível por padrão (recomendado); a automação abre visível sozinha só quando o login expira. `false` = sempre visível (útil só para depurar). | `true` |
+| `MANUAL_LOGIN_TIMEOUT_MINUTES` | Quanto tempo a janela visível espera pelo login manual antes de desistir (tentativa seguinte tenta de novo). | `10` |
+
+> **Por que "invisível" e não uma janela minimizada?** `PLAYWRIGHT_HEADLESS=true` faz o Chromium nunca desenhar janela nenhuma (modo headless real do navegador) — não é uma janela escondida atrás de outras, é o processo rodando sem interface gráfica.
+
+### V.3 — Sobre reutilizar a conta do Playground
+
+A automação **não pede uma conta separada**: a tarefa de envio é sempre atribuída ao **mesmo usuário já conectado ao Playground** no HUB (o robô escolhe automaticamente o usuário com sessão Playground ativa). Como o login do Teams e do Playground passam pelo **mesmo SSO corporativo (Azure AD)**, basta fazer o login manual do Teams **uma única vez** (na janela visível que aparece automaticamente quando necessário) usando a **mesma conta Microsoft** já usada para conectar o Playground — depois disso as duas sessões (Playground e Teams) ficam salvas cada uma no seu próprio perfil de navegador (`BROWSER_SESSION_PATH` e `TEAMS_BROWSER_SESSION_PATH`, respectivamente) e a automação passa a rodar sozinha, sem pedir login de novo, a não ser que a sessão expire (o que também é raro, pois o perfil é persistente entre reinicializações do serviço).
+
+### V.4 — Primeira ativação / recalibração de login (passo a passo)
+
+1. No `backend\.env`, confirme `TEAMS_PNG_DELIVERY_ENABLED=true`, `TEAMS_PNG_WATCH_FOLDER=<sua pasta>` e `PLAYWRIGHT_HEADLESS=true`.
+2. Rode `restart_services.bat` para o backend e o agente local pegarem a configuração nova.
+3. Coloque um `.png` de teste na pasta vigiada (ou aguarde o próximo relatório ser gerado).
+4. Se for a **primeira vez** (ou a sessão do Teams expirou), uma janela do Chromium **abrirá sozinha** pedindo o login — faça o SSO normalmente com a conta corporativa (a mesma do Playground) e aguarde a mensagem ser enviada; a janela fecha sozinha ao concluir.
+5. Nas próximas vezes, **nenhuma janela aparece** — o envio acontece em segundo plano. Você pode conferir em `backend\data\logs\local_agent_runtime.out.log` (ou nos **Logs** do dashboard) que a tarefa `deliver_png_teams_playwright` foi concluída.
+6. Se quiser reforçar/testar o login manualmente a qualquer momento, defina `PLAYWRIGHT_HEADLESS=false` temporariamente, reinicie os serviços, force o disparo (arquivo novo na pasta) e depois volte para `true`.
+
+### V.5 — Solução de problemas específica
+
+| Sintoma | Causa provável / Solução |
+|---|---|
+| **Nada é enviado e nenhuma janela abre** | Confira `TEAMS_PNG_DELIVERY_ENABLED=true` e se o `.png` realmente é o mais recente da pasta (por data de modificação). Veja `backend\data\logs\backend_runtime.out.log` por linhas `[teams_png_watch]`. |
+| **"PNG já foi enviado antes (mesmo conteúdo)"** | Esperado — o HUB não reenvia o mesmo conteúdo duas vezes. Se quiser forçar o reenvio, gere/edite o PNG (o conteúdo/hash muda) ou apague `backend\data\teams_png_delivery_state.json` (reseta o controle de dedup). |
+| **A janela do Chromium abre toda vez, mesmo já tendo logado antes** | O login não está persistindo: confirme que `TEAMS_BROWSER_SESSION_PATH` aponta para uma pasta com permissão de escrita e que ninguém está apagando `backend\data\browser_session_teams` entre execuções. |
+| **Janela abre e some sem enviar / erro de "chat não encontrado"** | O nome em `TEAMS_PNG_DELIVERY_CHAT_NAME` precisa ser **exatamente** igual ao nome do chat/grupo no Teams. Veja o screenshot de erro em `backend\data\screenshots\errors`. |
+| **Depois de reiniciar o notebook, pede login de novo** | Normal ocasionalmente (expiração de sessão do Azure AD). Basta fazer o login uma vez na janela visível que abre sozinha; a sessão volta a persistir. |
+| **Quero voltar a ver a janela sempre (depuração)** | Defina `PLAYWRIGHT_HEADLESS=false` no `.env` e rode `restart_services.bat`. Lembre de voltar para `true` depois. |
 
 ---
 
